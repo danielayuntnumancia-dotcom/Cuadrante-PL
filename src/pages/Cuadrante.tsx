@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, addDoc, query, where, doc, getDoc } from 'firebase/firestore';
+import { collection, getDocs, addDoc, doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { Agente, Grupo, ConfiguracionAnual, ServicioExtraordinario, AusenciaJustificada, TipoAusencia } from '../types';
-import { format, addDays, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, parseISO, differenceInDays, getHours, getMinutes, setHours, setMinutes, isWeekend, isAfter } from 'date-fns';
-import { exportToGoogleSheets, syncToGoogleCalendar } from '../lib/google-workspace';
+import { Agente, Grupo, ConfiguracionAnual, ServicioExtraordinario, AusenciaJustificada, TipoAusencia, VigenciaCuadrante } from '../types';
+import { format, addDays, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, parseISO, differenceInDays, isWeekend, isAfter } from 'date-fns';
+import { exportToGoogleSheets } from '../lib/google-workspace';
 import { es } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Plus, Download, FileSpreadsheet, CloudUpload, CalendarSync } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, FileSpreadsheet, CloudUpload, ArrowLeftRight, RotateCcw } from 'lucide-react';
 import * as xlsx from 'xlsx';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
@@ -38,6 +38,13 @@ export default function Cuadrante() {
   // Ausencia Form
   const [fechaFinAusencia, setFechaFinAusencia] = useState('');
   const [tipoAusencia, setTipoAusencia] = useState<TipoAusencia>('IT');
+
+  // Modal Cambio de Ciclo
+  const [isCambioCicloModalOpen, setIsCambioCicloModalOpen] = useState(false);
+  const [selectedGrupoCicloId, setSelectedGrupoCicloId] = useState('');
+  const [fechaCambioCiclo, setFechaCambioCiclo] = useState('');
+  const [cambioCicloActivo, setCambioCicloActivo] = useState(true);
+  const [guardandoCiclo, setGuardandoCiclo] = useState(false);
 
   const loadData = async () => {
     setLoading(true);
@@ -86,31 +93,113 @@ export default function Cuadrante() {
   const nextMonth = () => setCurrentDate(addDays(endOfMonth(currentDate), 1));
   const prevMonth = () => setCurrentDate(addDays(startOfMonth(currentDate), -1));
 
-  // Lógica del 7x7
+  // Obtener la vigencia temporal activa para un grupo en una fecha determinada
+  const getVigenciaActiva = (grupo: Grupo, fecha: Date): VigenciaCuadrante | null => {
+    if (!grupo.vigencias || grupo.vigencias.length === 0) return null;
+    const fechaStr = format(fecha, 'yyyy-MM-dd');
+    const validas = grupo.vigencias
+      .filter(v => v.fecha_desde <= fechaStr)
+      .sort((a, b) => a.fecha_desde.localeCompare(b.fecha_desde));
+    if (validas.length === 0) return null;
+    return validas[validas.length - 1];
+  };
+
+  // Lógica de si el agente trabaja en una fecha dada
   const esDiaTrabajo = (agente: Agente, fecha: Date) => {
     const grupo = grupos.find(g => g.id === agente.id_grupo);
     if (!grupo) return false;
     
-    const fechaPatron = parseISO(grupo.patron_inicio);
+    const vigencia = getVigenciaActiva(grupo, fecha);
+    const fechaPatronStr = vigencia?.patron_inicio || grupo.patron_inicio;
+    const fechaPatron = parseISO(fechaPatronStr);
     const diff = differenceInDays(fecha, fechaPatron);
     
-    // Si diff es negativo, hay que ajustar el módulo
     const ciclo = 14;
     let diaEnCiclo = diff % ciclo;
     if (diaEnCiclo < 0) diaEnCiclo += ciclo;
     
-    // Primeros 7 días trabaja, siguientes 7 descansa
-    return diaEnCiclo < 7;
+    let trabaja = diaEnCiclo < 7;
+
+    // Evaluar cambio de ciclo / inversión
+    if (vigencia) {
+      if (vigencia.invertir_ciclo) {
+        trabaja = !trabaja;
+      }
+    } else if (grupo.cambio_ciclo_activo && grupo.fecha_cambio_ciclo) {
+      const fechaCorte = parseISO(grupo.fecha_cambio_ciclo);
+      if (differenceInDays(fecha, fechaCorte) >= 0) {
+        trabaja = !trabaja;
+      }
+    }
+
+    return trabaja;
   };
 
-  const getAusenciaEnDia = (agenteId: string, fecha: Date) => {
-    return ausencias.find(a => {
-      if (a.id_agente !== agenteId) return false;
+  // Cálculo del turno Mañana / Tarde (M / T) con regla de >= 4 agentes y rotación
+  const getTurnoAgente = (agente: Agente, fecha: Date): 'M' | 'T' => {
+    const grupo = grupos.find(g => g.id === agente.id_grupo);
+    if (!grupo) return 'M';
+
+    const agentesGrupo = agentes.filter(a => a.id_grupo === agente.id_grupo);
+    const minAgentes = config?.reglas_turnos?.min_agentes_division_mt ?? 4;
+    const turnoDefecto = config?.reglas_turnos?.turno_defecto_sin_division ?? 'M';
+
+    const vigencia = getVigenciaActiva(grupo, fecha);
+    const divisionActiva = vigencia?.division_mt !== undefined ? vigencia.division_mt : (agentesGrupo.length >= minAgentes);
+
+    if (!divisionActiva || agentesGrupo.length < minAgentes) {
+      return turnoDefecto;
+    }
+
+    // Ordenar agentes del grupo de forma estable
+    const agentesOrdenados = [...agentesGrupo].sort((a, b) => a.placa.localeCompare(b.placa) || a.nombre.localeCompare(b.nombre));
+    const agenteIndex = agentesOrdenados.findIndex(a => a.id === agente.id);
+    const mitad = Math.ceil(agentesOrdenados.length / 2);
+    const esPrimeraMitad = agenteIndex < mitad;
+
+    // Calcular ciclo transcurrido
+    const fechaPatronStr = vigencia?.patron_inicio || grupo.patron_inicio;
+    const fechaPatron = parseISO(fechaPatronStr);
+    const diffDays = differenceInDays(fecha, fechaPatron);
+    const numCiclo = Math.floor(diffDays / 14);
+
+    const cicloPar = (numCiclo % 2 + 2) % 2 === 0;
+    const rotacionInvertida = (vigencia?.rotacion_mt_invertida ?? grupo.rotacion_mt_invertida) ?? false;
+
+    let turnoPrimeraMitad: 'M' | 'T' = cicloPar ? 'M' : 'T';
+    if (rotacionInvertida) {
+      turnoPrimeraMitad = turnoPrimeraMitad === 'M' ? 'T' : 'M';
+    }
+
+    return esPrimeraMitad ? turnoPrimeraMitad : (turnoPrimeraMitad === 'M' ? 'T' : 'M');
+  };
+
+  const getAusenciaEnDia = (agente: Agente, fecha: Date) => {
+    // 1. Ausencias justificadas explícitas
+    const ausencia = ausencias.find(a => {
+      if (a.id_agente !== agente.id) return false;
       const inicio = parseISO(a.fecha_inicio);
       const fin = parseISO(a.fecha_fin);
-      // fecha >= inicio && fecha <= fin
       return differenceInDays(fecha, inicio) >= 0 && differenceInDays(fin, fecha) >= 0;
     });
+    if (ausencia) return ausencia;
+
+    // 2. Comprobar si el mes corresponde a las vacaciones asignadas al grupo en la configuración
+    if (config?.plan_vacaciones) {
+      const plan = config.plan_vacaciones.find(p => p.id_grupo === agente.id_grupo);
+      const mesNum = fecha.getMonth() + 1;
+      if (plan && plan.meses && plan.meses.includes(mesNum)) {
+        return {
+          id_agente: agente.id!,
+          fecha_inicio: format(fecha, 'yyyy-MM-dd'),
+          fecha_fin: format(fecha, 'yyyy-MM-dd'),
+          tipo: 'V' as TipoAusencia,
+          computa_horas: true
+        };
+      }
+    }
+
+    return null;
   };
 
   const getExtrasEnDia = (agenteId: string, fecha: Date) => {
@@ -128,8 +217,6 @@ export default function Cuadrante() {
     if (!tarifas) return 0;
 
     let costeTotal = 0;
-    // Simplificación MVP: Iterar por horas y asignar la tarifa correspondiente.
-    // Esto es una aproximación. Para precisión exacta hay que calcular franjas.
     let iter = new Date(fInicio.getTime());
     while (isAfter(fFin, iter)) {
       const hora = iter.getHours();
@@ -137,7 +224,7 @@ export default function Cuadrante() {
       
       const esFinDeSemana = isWeekend(iter);
       const fechaStr = format(iter, 'yyyy-MM-dd');
-      const esFestivoDia = config.festivos.includes(fechaStr) || esFinDeSemana;
+      const esFestivoDia = (config.festivos || []).includes(fechaStr) || esFinDeSemana;
 
       let tarifaHora = 0;
       if (esFestivoDia) {
@@ -146,12 +233,11 @@ export default function Cuadrante() {
         tarifaHora = esNocturna ? tarifas.laborable_nocturna : tarifas.laborable_diurna;
       }
       
-      // Fracciones de hora
       const diffMs = fFin.getTime() - iter.getTime();
       let fraccionHora = 1;
       if (diffMs < 3600000) {
         fraccionHora = diffMs / 3600000;
-        iter = new Date(fFin.getTime()); // Salir del loop
+        iter = new Date(fFin.getTime());
       } else {
         iter.setHours(iter.getHours() + 1);
       }
@@ -174,7 +260,6 @@ export default function Cuadrante() {
     
     const fechaFinDate = new Date(selectedCell.fecha);
     fechaFinDate.setHours(hF, mF, 0);
-    // Si la hora de fin es menor que la de inicio, asumimos que cruza la medianoche
     if (hF < hI) {
       fechaFinDate.setDate(fechaFinDate.getDate() + 1);
     }
@@ -215,6 +300,24 @@ export default function Cuadrante() {
     loadEventosMes(currentDate);
   };
 
+  // Botón Rápido ROTAR M/T
+  const handleRotarMT = async () => {
+    try {
+      if (grupos.length === 0) return;
+      await Promise.all(
+        grupos.map(g => 
+          g.id ? updateDoc(doc(db, 'grupos', g.id), {
+            rotacion_mt_invertida: !g.rotacion_mt_invertida
+          }) : Promise.resolve()
+        )
+      );
+      await loadData();
+    } catch (err) {
+      console.error("Error al rotar M/T:", err);
+      alert("Error al rotar turnos M/T");
+    }
+  };
+
   // Exportaciones
   const exportPDF = () => {
     const doc = new jsPDF('landscape') as jsPDFWithAutoTable;
@@ -225,9 +328,9 @@ export default function Cuadrante() {
       return [
         agente.nombre,
         ...daysInMonth.map(dia => {
-          const aus = getAusenciaEnDia(agente.id!, dia);
+          const aus = getAusenciaEnDia(agente, dia);
           if (aus) return aus.tipo;
-          if (esDiaTrabajo(agente, dia)) return 'T';
+          if (esDiaTrabajo(agente, dia)) return getTurnoAgente(agente, dia);
           return 'L';
         })
       ];
@@ -252,11 +355,11 @@ export default function Cuadrante() {
     agentes.forEach(agente => {
       const row = [agente.nombre];
       daysInMonth.forEach(dia => {
-        const aus = getAusenciaEnDia(agente.id!, dia);
+        const aus = getAusenciaEnDia(agente, dia);
         if (aus) {
           row.push(aus.tipo);
         } else if (esDiaTrabajo(agente, dia)) {
-          row.push('T');
+          row.push(getTurnoAgente(agente, dia));
         } else {
           row.push('L');
         }
@@ -278,11 +381,11 @@ export default function Cuadrante() {
       agentes.forEach(agente => {
         const row = [agente.nombre];
         daysInMonth.forEach(dia => {
-          const aus = getAusenciaEnDia(agente.id!, dia);
+          const aus = getAusenciaEnDia(agente, dia);
           if (aus) {
             row.push(aus.tipo);
           } else if (esDiaTrabajo(agente, dia)) {
-            row.push('T');
+            row.push(getTurnoAgente(agente, dia));
           } else {
             row.push('L');
           }
@@ -297,31 +400,54 @@ export default function Cuadrante() {
     }
   };
 
-  const handleSyncCalendar = async () => {
-    try {
-      const events: any[] = [];
-      agentes.forEach(agente => {
-        daysInMonth.forEach(dia => {
-          const aus = getAusenciaEnDia(agente.id!, dia);
-          if (aus) return; // Optional: could also sync absences
-          if (esDiaTrabajo(agente, dia)) {
-            events.push({
-              summary: `Turno: ${agente.nombre}`,
-              start: format(dia, 'yyyy-MM-dd'),
-              end: format(addDays(dia, 1), 'yyyy-MM-dd') // End date is exclusive in all-day events
-            });
-          }
-        });
-      });
-      if (events.length === 0) {
-        alert("No hay turnos para sincronizar");
-        return;
+  const handleOpenCambioCiclo = () => {
+    if (grupos.length > 0) {
+      const g = grupos[0];
+      setSelectedGrupoCicloId(g.id || '');
+      setFechaCambioCiclo(g.fecha_cambio_ciclo || `${format(currentDate, 'yyyy')}-08-01`);
+      setCambioCicloActivo(g.cambio_ciclo_activo !== undefined ? g.cambio_ciclo_activo : true);
+    }
+    setIsCambioCicloModalOpen(true);
+  };
+
+  const handleSelectGrupoCiclo = (grupoId: string) => {
+    setSelectedGrupoCicloId(grupoId);
+    if (grupoId !== 'ALL') {
+      const g = grupos.find(x => x.id === grupoId);
+      if (g) {
+        setFechaCambioCiclo(g.fecha_cambio_ciclo || `${format(currentDate, 'yyyy')}-08-01`);
+        setCambioCicloActivo(g.cambio_ciclo_activo !== undefined ? g.cambio_ciclo_activo : true);
       }
-      const url = await syncToGoogleCalendar(events);
-      window.open(url, '_blank');
-    } catch (e) {
-      console.error(e);
-      alert('Error sincronizando con Calendar');
+    }
+  };
+
+  const handleGuardarCambioCiclo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedGrupoCicloId) return;
+    setGuardandoCiclo(true);
+    try {
+      if (selectedGrupoCicloId === 'ALL') {
+        await Promise.all(
+          grupos.map(g => 
+            g.id ? updateDoc(doc(db, 'grupos', g.id), {
+              fecha_cambio_ciclo: fechaCambioCiclo,
+              cambio_ciclo_activo: cambioCicloActivo
+            }) : Promise.resolve()
+          )
+        );
+      } else {
+        await updateDoc(doc(db, 'grupos', selectedGrupoCicloId), {
+          fecha_cambio_ciclo: fechaCambioCiclo,
+          cambio_ciclo_activo: cambioCicloActivo
+        });
+      }
+      await loadData();
+      setIsCambioCicloModalOpen(false);
+    } catch (err) {
+      console.error("Error guardando cambio de ciclo:", err);
+      alert("Error al guardar la configuración del cambio de ciclo");
+    } finally {
+      setGuardandoCiclo(false);
     }
   };
 
@@ -337,12 +463,23 @@ export default function Cuadrante() {
           </h1>
           <button onClick={nextMonth} className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-900 rounded border border-transparent hover:border-slate-800 transition-colors"><ChevronRight size={16}/></button>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          <button 
+            onClick={handleRotarMT} 
+            className="bg-sky-600/20 text-sky-400 border border-sky-500/30 hover:bg-sky-500/30 px-3 py-1.5 rounded flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest transition-colors"
+            title="Invertir asignación de Mañanas y Tardes (M / T) para grupos de 4 o más agentes"
+          >
+            <RotateCcw size={14} /> Rotar M/T
+          </button>
+          <button 
+            onClick={handleOpenCambioCiclo} 
+            className="bg-amber-600/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30 px-3 py-1.5 rounded flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest transition-colors"
+            title="Configurar Cambio de Ciclo de Turnos (Vacaciones de Verano)"
+          >
+            <ArrowLeftRight size={14} /> Cambio de Ciclo
+          </button>
           <button onClick={handleExportSheets} className="bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 px-3 py-1.5 rounded flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest transition-colors" title="Exportar a Google Sheets">
             <CloudUpload size={14} /> Sheets
-          </button>
-          <button onClick={handleSyncCalendar} className="bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-500/30 px-3 py-1.5 rounded flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest transition-colors" title="Sincronizar con Google Calendar">
-            <CalendarSync size={14} /> Sincronizar
           </button>
           <button onClick={exportExcel} className="bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 px-3 py-1.5 rounded flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest transition-colors">
             <FileSpreadsheet size={14} /> Excel
@@ -361,10 +498,31 @@ export default function Cuadrante() {
                 <th className="px-3 py-2 font-normal tracking-widest uppercase border-r border-slate-800 sticky left-0 bg-slate-900 z-30 w-48 shadow-[1px_0_0_0_#1e293b]">Agente</th>
                 {daysInMonth.map(dia => {
                   const fStr = format(dia, 'yyyy-MM-dd');
-                  const isFest = config?.festivos.includes(fStr);
+                  const festivoDetalle = config?.festivos_detallados?.find(f => f.fecha === fStr);
+                  const diaSinServDetalle = config?.dias_sin_servicio_detallados?.find(d => d.fecha === fStr);
+                  const isFest = !!festivoDetalle || (config?.festivos || []).includes(fStr);
+                  const isSinServ = !!diaSinServDetalle || (config?.dias_sin_servicio || []).includes(fStr);
                   const isWk = isWeekend(dia);
+
+                  let thClass = 'text-slate-500';
+                  let titleTooltip = '';
+
+                  if (festivoDetalle) {
+                    thClass = 'bg-rose-500/20 text-rose-400 font-bold';
+                    titleTooltip = `Festivo: ${festivoDetalle.nombre}`;
+                  } else if (diaSinServDetalle) {
+                    thClass = 'bg-amber-500/20 text-amber-400 font-bold';
+                    titleTooltip = `Sin Servicio: ${diaSinServDetalle.motivo}`;
+                  } else if (isFest || isWk) {
+                    thClass = 'bg-rose-500/10 text-rose-400';
+                  }
+
                   return (
-                    <th key={dia.toString()} className={`px-1.5 py-2 text-center border-r border-slate-800 font-normal min-w-[36px] ${(isFest || isWk) ? 'bg-rose-500/10 text-rose-400' : 'text-slate-500'}`}>
+                    <th 
+                      key={dia.toString()} 
+                      title={titleTooltip}
+                      className={`px-1.5 py-2 text-center border-r border-slate-800 font-normal min-w-[36px] ${thClass}`}
+                    >
                       <div className="text-[9px] uppercase">{format(dia, 'E', {locale: es}).charAt(0)}</div>
                       <div>{format(dia, 'd')}</div>
                     </th>
@@ -381,16 +539,34 @@ export default function Cuadrante() {
                   </td>
                   {daysInMonth.map(dia => {
                     const trabaja = esDiaTrabajo(agente, dia);
-                    const ausencia = getAusenciaEnDia(agente.id!, dia);
+                    const ausencia = getAusenciaEnDia(agente, dia);
                     const extrasDelDia = getExtrasEnDia(agente.id!, dia);
                     
-                    let bgColor = trabaja ? 'bg-indigo-500/10' : 'bg-transparent';
-                    let textColor = trabaja ? 'text-indigo-400' : 'text-slate-700';
-                    let content = trabaja ? 'T' : '';
+                    let turnoCalculado: 'M' | 'T' | '' = '';
+                    let bgColor = 'bg-transparent';
+                    let textColor = 'text-slate-700';
+                    let content = '';
+
+                    if (trabaja) {
+                      turnoCalculado = getTurnoAgente(agente, dia);
+                      content = turnoCalculado;
+                      if (turnoCalculado === 'M') {
+                        bgColor = 'bg-sky-500/15';
+                        textColor = 'text-sky-400 font-bold';
+                      } else {
+                        bgColor = 'bg-amber-500/15';
+                        textColor = 'text-amber-400 font-bold';
+                      }
+                    }
 
                     if (ausencia) {
-                      bgColor = ausencia.tipo === 'V' ? 'bg-amber-500/20' : 'bg-rose-500/20';
-                      textColor = ausencia.tipo === 'V' ? 'text-amber-400' : 'text-rose-400';
+                      if (ausencia.tipo === 'V') {
+                        bgColor = 'bg-amber-500/25';
+                        textColor = 'text-amber-300 font-bold';
+                      } else {
+                        bgColor = 'bg-rose-500/20';
+                        textColor = 'text-rose-400 font-bold';
+                      }
                       content = ausencia.tipo;
                     }
 
@@ -500,6 +676,96 @@ export default function Cuadrante() {
                 </form>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Cambio de Ciclo */}
+      {isCambioCicloModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-800 rounded shadow-2xl w-full max-w-md flex flex-col">
+            <div className="p-4 border-b border-slate-800">
+              <h2 className="text-[12px] font-bold text-slate-100 uppercase tracking-widest flex items-center gap-2">
+                <ArrowLeftRight size={16} className="text-amber-400" /> CAMBIO DE CICLO POLICIAL
+              </h2>
+              <p className="text-[10px] font-mono text-slate-500 mt-0.5">Inversión de semanas de trabajo (Pares / Impares)</p>
+            </div>
+            
+            <form onSubmit={handleGuardarCambioCiclo} className="p-5 space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">
+                  Grupo Afectado
+                </label>
+                <select 
+                  value={selectedGrupoCicloId} 
+                  onChange={e => handleSelectGrupoCiclo(e.target.value)} 
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-[11px] font-mono text-slate-300 outline-none focus:border-amber-500"
+                >
+                  {grupos.map(g => (
+                    <option key={g.id} value={g.id}>{g.nombre.toUpperCase()}</option>
+                  ))}
+                  {grupos.length > 1 && (
+                    <option value="ALL">TODOS LOS GRUPOS</option>
+                  )}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">
+                  Fecha de Entrada en Vigor (Reincorporación)
+                </label>
+                <input 
+                  required 
+                  type="date" 
+                  value={fechaCambioCiclo} 
+                  onChange={e => setFechaCambioCiclo(e.target.value)} 
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-[11px] font-mono text-slate-300 outline-none focus:border-amber-500 [color-scheme:dark]" 
+                />
+                <span className="text-[9px] font-mono text-slate-500 mt-1 block">
+                  Normalmente 1 de agosto tras el periodo vacacional de julio.
+                </span>
+              </div>
+
+              <div className="bg-slate-950 p-3 rounded border border-slate-800/80 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">
+                    Inversión de Ciclo
+                  </span>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input 
+                      type="checkbox" 
+                      checked={cambioCicloActivo} 
+                      onChange={e => setCambioCicloActivo(e.target.checked)} 
+                      className="sr-only peer" 
+                    />
+                    <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-600"></div>
+                  </label>
+                </div>
+                <p className="text-[10px] font-mono text-slate-400 leading-relaxed">
+                  {cambioCicloActivo 
+                    ? "✓ Activado: A partir de la fecha seleccionada, los días que antes eran libres pasan a ser de trabajo y viceversa (desfase de 7 días)."
+                    : "✗ Desactivado: El grupo mantiene el patrón continuo 7x7 sin saltos durante todo el año."
+                  }
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800 mt-2">
+                <button 
+                  type="button" 
+                  onClick={() => setIsCambioCicloModalOpen(false)} 
+                  className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-slate-200 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  type="submit" 
+                  disabled={guardandoCiclo}
+                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-[10px] uppercase tracking-widest rounded transition-colors disabled:opacity-50"
+                >
+                  {guardandoCiclo ? 'Guardando...' : 'Aplicar Cambio de Ciclo'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

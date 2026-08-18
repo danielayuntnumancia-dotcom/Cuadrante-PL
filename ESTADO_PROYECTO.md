@@ -1,6 +1,6 @@
 # Estado del Proyecto: Cuadrante PL
 
-**Fecha de actualización:** 13 de agosto de 2026  
+**Fecha de actualización:** 18 de agosto de 2026  
 **Proyecto Firebase:** `cuadrantepl`  
 **URL de producción:** [https://cuadrantepl.web.app](https://cuadrantepl.web.app)
 
@@ -8,32 +8,36 @@
 
 ## 🏆 Logros de esta Sesión
 
-1. **Configuración de Firebase Hosting:**
-   - Vinculación del proyecto local a Firebase `cuadrantepl` mediante `.firebaserc` y `firebase.json`.
-   - Compilaciones de producción con Vite (`npm run build`) y despliegue exitoso en Hosting.
+1. **Gestión de Cambio de Ciclo Policial:**
+   - Eliminación del botón redundante de sincronización de Google Calendar.
+   - Creación del botón y modal interactivo de *Cambio de Ciclo* para invertir la paridad de semanas (pares/impares) tras el periodo vacacional estival.
 
-2. **Web App y Autenticación con Google:**
-   - Registro de la Web App en el proyecto Firebase (`Cuadrante PL Web`) y actualización de credenciales en `firebase-applet-config.json`.
-   - Implementación de control y visualización de errores de autenticación en `src/App.tsx`.
+2. **División y Rotación de Turnos Mañana / Tarde (M / T):**
+   - Implementación del motor de cálculo que divide automáticamente la plantilla de grupos de 4 o más agentes al 50% entre Mañana (`M`) y Tarde (`T`).
+   - Rotación semanal automática entre ciclos de trabajo.
+   - Botón `ROTAR M/T` en la barra superior para invertir la asignación de turnos.
+   - Diferenciación cromática en el cuadrante (Cian para `M` y Ámbar para `T`) y exportación fidedigna a Excel, PDF y Google Sheets.
 
-3. **Creación y Configuración de Firestore Database:**
-   - Creación de la base de datos `Cloud Firestore` por defecto en la región `europe-west1`.
-   - Despliegue de las reglas de seguridad (`firestore.rules`) permitiendo acceso de lectura/escritura a usuarios autenticados.
+3. **Subapartados Modulares de Configuración Anual:**
+   - **General y Tarifas:** Horarios base y matriz de recargos por horas extraordinarias (diurnas, nocturnas y festivas).
+   - **14 Festivos y Días Especiales:** Contador dinámico (`X / 14`), precarga de 14 festivos oficiales y registro de fechas sin servicio ordinario.
+   - **Plan de Vacaciones y Reglas M/T:** Asignación de meses de vacaciones por grupo y configuración del umbral de agentes para división.
+   - **Vigencias Temporales:** Programación de cambios de cuadrante con fecha de entrada en vigor (*"desde fecha X en adelante"*), protegiendo el histórico previo.
 
-4. **Optimización de Rendimiento y Navegación Instantánea:**
-   - Habilitación de caché persistente multitabla (`persistentLocalCache` y `persistentMultipleTabManager`) en `src/lib/firebase.ts`.
-   - Eliminación de retrasos de red al cambiar entre las pestañas del sistema (*Resumen*, *Cuadrante*, *Plantilla*, *Configuración*).
+4. **Despliegue Completo en Firebase:**
+   - Compilación optimizada con Vite y despliegue exitoso en Firebase Hosting y Cloud Firestore Rules.
 
 ---
 
 ## 📌 Tareas Pendientes para la Próxima Sesión
 
-1. **Gestión de Usuarios y Roles:**
-   - Configurar roles de usuario (administrador / agente) si se requiere restringir acciones en la plantilla o cuadrante.
-2. **Validaciones Adicionales en Cuadrante:**
-   - Revisión de reglas de negocio para solapamientos de turnos o ausencias.
-3. **Optimización del Bundle Frontend:**
-   - Aplicar code-splitting mediante `import()` dinámico para optimizar el tamaño de los módulos de Vite si el tamaño del bundle aumenta.
+1. **Horarios de Entrada y Salida Diferenciados:**
+   - Permitir configurar horarios específicos según el turno (Mañana, Tarde o Noche) y en función del día de la semana (de Lunes a Domingo).
+2. **Configuración de Días M/T para Grupos < 4 Agentes:**
+   - En las reglas de división, permitir elegir qué días concretos estarán asignados a turno de Mañana y cuáles a turno de Tarde para grupos pequeños.
+3. **Cómputo Estricto de Agentes Activos y Estados Prevalentes:**
+   - El sistema debe determinar si el grupo tiene 4 o más agentes computables excluyendo automáticamente a aquellos en situación de *Comisión de servicio*, *Baja médica* o *Excedencia*.
+   - Estos estados deben prevalecer sobre cualquier otro cálculo de turnos hasta que se registre formalmente la reincorporación del agente, evitando alteraciones erróneas en el cuadrante.
 
 ---
-*Entorno sincronizado y guardado de forma segura.*
+*Entorno sincronizado, desplegado en Firebase y guardado en GitHub de forma segura.*
