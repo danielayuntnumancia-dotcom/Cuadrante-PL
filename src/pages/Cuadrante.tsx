@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, addDoc, doc, getDoc, updateDoc } from 'firebase/firestore';
+import { collection, getDocs, addDoc, doc, getDoc, updateDoc, query, where, writeBatch } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { Agente, Grupo, ConfiguracionAnual, ServicioExtraordinario, AusenciaJustificada, TipoAusencia, VigenciaCuadrante } from '../types';
+import { Agente, Grupo, ConfiguracionAnual, ServicioExtraordinario, AusenciaJustificada, TipoAusencia, VigenciaCuadrante, TurnoImportado } from '../types';
+import { parseExcelCuadrante, ImportResult } from '../lib/excelParser';
 import { format, addDays, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, parseISO, differenceInDays, isWeekend, isAfter } from 'date-fns';
 import { exportToGoogleSheets } from '../lib/google-workspace';
 import { es } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Download, FileSpreadsheet, CloudUpload, ArrowLeftRight, RotateCcw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, FileSpreadsheet, CloudUpload, ArrowLeftRight, RotateCcw, Upload } from 'lucide-react';
 import * as xlsx from 'xlsx';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
@@ -25,6 +26,14 @@ export default function Cuadrante() {
   const [extras, setExtras] = useState<ServicioExtraordinario[]>([]);
   
   const [loading, setLoading] = useState(true);
+  const [changingMonth, setChangingMonth] = useState(false);
+  // State Importación
+  const [turnosImportados, setTurnosImportados] = useState<TurnoImportado[]>([]);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [importando, setImportando] = useState(false);
+  const [nuevoTurnoManual, setNuevoTurnoManual] = useState('');
+
   
   // Modal State
   const [selectedCell, setSelectedCell] = useState<{agente: Agente, fecha: Date} | null>(null);
@@ -46,43 +55,66 @@ export default function Cuadrante() {
   const [cambioCicloActivo, setCambioCicloActivo] = useState(true);
   const [guardandoCiclo, setGuardandoCiclo] = useState(false);
 
-  const loadData = async () => {
-    setLoading(true);
+  const [initialDataLoaded, setInitialDataLoaded] = useState(false);
+
+  const loadInitialData = async () => {
     try {
-      const [agentesSnap, gruposSnap, configSnap] = await Promise.all([
+      const [agentesSnap, gruposSnap, configSnap, ausenciasSnap, extrasSnap] = await Promise.all([
         getDocs(collection(db, 'agentes')),
         getDocs(collection(db, 'grupos')),
-        getDoc(doc(db, 'configuracion', 'anual'))
+        getDoc(doc(db, 'configuracion', 'anual')),
+        getDocs(collection(db, 'ausencias_justificadas')),
+        getDocs(collection(db, 'servicios_extraordinarios'))
       ]);
       
       setAgentes(agentesSnap.docs.map(d => ({ ...d.data(), id: d.id } as Agente)));
       setGrupos(gruposSnap.docs.map(d => ({ ...d.data(), id: d.id } as Grupo)));
-      if (configSnap.exists()) {
-        setConfig(configSnap.data() as ConfiguracionAnual);
-      }
-      await loadEventosMes(currentDate);
+      if (configSnap.exists()) setConfig(configSnap.data() as ConfiguracionAnual);
+      
+      setAusencias(ausenciasSnap.docs.map(d => ({ ...d.data(), id: d.id } as AusenciaJustificada)));
+      setExtras(extrasSnap.docs.map(d => ({ ...d.data(), id: d.id } as ServicioExtraordinario)));
+      setInitialDataLoaded(true);
     } catch (error) {
-      console.error("Error cargando datos del cuadrante:", error);
-    } finally {
-      setLoading(false);
+      console.error("Error cargando datos iniciales:", error);
     }
   };
 
-  const loadEventosMes = async (date: Date) => {
+  const loadMonthData = async (date: Date) => {
     try {
-      const [ausenciasSnap, extrasSnap] = await Promise.all([
-        getDocs(collection(db, 'ausencias_justificadas')),
-        getDocs(collection(db, 'servicios_extraordinarios'))
-      ]);
-      setAusencias(ausenciasSnap.docs.map(d => ({ ...d.data(), id: d.id } as AusenciaJustificada)));
-      setExtras(extrasSnap.docs.map(d => ({ ...d.data(), id: d.id } as ServicioExtraordinario)));
+      const mesAnio = format(date, 'yyyy-MM');
+      const turnosImportadosSnap = await getDocs(query(collection(db, 'turnos_importados'), where('mes_anio', '==', mesAnio)));
+      setTurnosImportados(turnosImportadosSnap.docs.map(d => ({ ...d.data(), id: d.id } as TurnoImportado)));
     } catch (error) {
-      console.error("Error cargando eventos:", error);
+      console.error("Error cargando datos del mes:", error);
     }
+  };
+  
+  // Para compatibilidad con otras partes que llaman a loadEventosMes o loadData
+  const loadData = async () => {
+    setLoading(true);
+    await loadInitialData();
+    await loadMonthData(currentDate);
+    setLoading(false);
+  };
+  
+  const loadEventosMes = async (date: Date) => {
+    // Si se añade un evento manual nuevo
+    const [ausenciasSnap, extrasSnap] = await Promise.all([
+      getDocs(collection(db, 'ausencias_justificadas')),
+      getDocs(collection(db, 'servicios_extraordinarios'))
+    ]);
+    setAusencias(ausenciasSnap.docs.map(d => ({ ...d.data(), id: d.id } as AusenciaJustificada)));
+    setExtras(extrasSnap.docs.map(d => ({ ...d.data(), id: d.id } as ServicioExtraordinario)));
+    await loadMonthData(date);
   };
 
   useEffect(() => {
-    loadData();
+    if (!initialDataLoaded) {
+      loadData();
+    } else {
+      setChangingMonth(true);
+      loadMonthData(currentDate).finally(() => setChangingMonth(false));
+    }
   }, [currentDate]);
 
   const daysInMonth = eachDayOfInterval({
@@ -208,6 +240,19 @@ export default function Cuadrante() {
       const start = parseISO(e.fecha_inicio);
       return isSameDay(start, fecha);
     });
+  };
+
+  
+  const getTurnoManualEnDia = (agente: Agente, fecha: Date): string | null => {
+    const mesAnio = format(fecha, 'yyyy-MM');
+    const docImportado = turnosImportados.find(t => t.id_agente === agente.id && t.mes_anio === mesAnio);
+    if (!docImportado || !docImportado.turnos) return null;
+    const diaStr = format(fecha, 'dd');
+    return docImportado.turnos[diaStr] || null;
+  };
+  
+  const getDiaSinServicioDetalle = (fecha: Date): any | null => {
+    return null; // Mock para la exportacion si falta
   };
 
   // Cálculo Económico
@@ -348,16 +393,34 @@ export default function Cuadrante() {
   };
 
   const exportExcel = () => {
-    const ws_data = [
-      ['Agente', ...daysInMonth.map(d => format(d, 'd-MMM', {locale: es}))]
-    ];
+    const mesAnio = format(currentDate, 'MMMM - yyyy', {locale: es}).toUpperCase();
+    
+    // Fila 1: Título del mes
+    const row1 = [mesAnio];
+    
+    // Fila 2: Cabeceras
+    const row2 = ['TIP', 'AGENTE', ...daysInMonth.map(d => format(d, 'd'))];
+    
+    // Fila 3: Días de la semana
+    const row3 = ['', '', ...daysInMonth.map(d => format(d, 'E', {locale: es}).charAt(0).toUpperCase())];
+
+    const ws_data = [row1, row2, row3];
     
     agentes.forEach(agente => {
-      const row = [agente.nombre];
+      const row = [agente.placa, agente.nombre];
       daysInMonth.forEach(dia => {
+        const manual = getTurnoManualEnDia(agente, dia);
+        if (manual) {
+           row.push(manual);
+           return;
+        }
+
         const aus = getAusenciaEnDia(agente, dia);
+        const sinServ = getDiaSinServicioDetalle(dia);
         if (aus) {
           row.push(aus.tipo);
+        } else if (sinServ) {
+          row.push('');
         } else if (esDiaTrabajo(agente, dia)) {
           row.push(getTurnoAgente(agente, dia));
         } else {
@@ -370,7 +433,7 @@ export default function Cuadrante() {
     const ws = xlsx.utils.aoa_to_sheet(ws_data);
     const wb = xlsx.utils.book_new();
     xlsx.utils.book_append_sheet(wb, ws, "Cuadrante");
-    xlsx.writeFile(wb, `cuadrante_${format(currentDate, 'yyyy_MM')}.xlsx`);
+    xlsx.writeFile(wb, `plantilla_${format(currentDate, 'yyyy_MM')}.xlsx`);
   };
 
   const handleExportSheets = async () => {
@@ -392,11 +455,103 @@ export default function Cuadrante() {
         });
         data.push(row);
       });
-      const url = await exportToGoogleSheets(data, `Cuadrante ${format(currentDate, 'MMMM yyyy', {locale: es})}`);
+      const url = await exportToGoogleSheets(data, `Cuadrante ${format(currentDate, 'MMMM yyyy', {locale: es})}
+            {changingMonth && <span className="animate-pulse text-indigo-400 ml-2">...</span>}`);
       window.open(url, '_blank');
     } catch (e) {
       console.error(e);
       alert('Error exportando a Sheets');
+    }
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const file = e.target.files[0];
+      setImportando(true);
+      try {
+        const result = await parseExcelCuadrante(file, agentes);
+        setImportResult(result);
+      } catch (err: any) {
+        alert(err.message || 'Error procesando el archivo.');
+        setImportResult(null);
+      } finally {
+        setImportando(false);
+      }
+    }
+  };
+
+  const handleGuardarImportacion = async () => {
+    if (!importResult || importResult.turnosImportados.length === 0 || !importResult.mes_anio) return;
+    setImportando(true);
+    try {
+      const batch = writeBatch(db);
+      const mesAnio = importResult.mes_anio;
+      
+      // Borrar importaciones anteriores del mismo mes para los agentes que estamos importando
+      const qViejos = query(collection(db, 'turnos_importados'), where('mes_anio', '==', mesAnio));
+      const viejosSnap = await getDocs(qViejos);
+      viejosSnap.docs.forEach(d => {
+         const data = d.data();
+         if (importResult.turnosImportados.some(ti => ti.id_agente === data.id_agente)) {
+            batch.delete(d.ref);
+         }
+      });
+
+      // Añadir los nuevos
+      importResult.turnosImportados.forEach(ti => {
+        const newRef = doc(collection(db, 'turnos_importados'));
+        batch.set(newRef, ti);
+      });
+
+      await batch.commit();
+      setIsImportModalOpen(false);
+      setImportResult(null);
+      await loadEventosMes(currentDate);
+    } catch (err) {
+      console.error(err);
+      alert('Error guardando en base de datos.');
+    } finally {
+      setImportando(false);
+    }
+  };
+
+  const handleGuardarEdicionManual = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCell) return;
+    
+    const mesAnio = format(selectedCell.fecha, 'yyyy-MM');
+    const diaStr = format(selectedCell.fecha, 'dd');
+    
+    let docImportado = turnosImportados.find(t => t.id_agente === selectedCell.agente.id && t.mes_anio === mesAnio);
+    
+    try {
+      const valorTurno = nuevoTurnoManual.trim().toUpperCase();
+      if (docImportado && docImportado.id) {
+         // Update existing
+         const updatedTurnos = { ...docImportado.turnos };
+         if (valorTurno === '') {
+             delete updatedTurnos[diaStr]; // Si está vacío, borrar manual
+         } else {
+             updatedTurnos[diaStr] = valorTurno;
+         }
+         await updateDoc(doc(db, 'turnos_importados', docImportado.id), { turnos: updatedTurnos });
+      } else {
+         if (valorTurno !== '') {
+             // Create new doc for this agent and month
+             const newTurno: Omit<TurnoImportado, 'id'> = {
+                id_agente: selectedCell.agente.id!,
+                mes_anio: mesAnio,
+                turnos: { [diaStr]: valorTurno }
+             };
+             await addDoc(collection(db, 'turnos_importados'), newTurno);
+         }
+      }
+      setSelectedCell(null);
+      setNuevoTurnoManual('');
+      loadEventosMes(currentDate);
+    } catch (error) {
+       console.error("Error guardando edición manual:", error);
+       alert('Error actualizando turno manual.');
     }
   };
 
@@ -478,6 +633,9 @@ export default function Cuadrante() {
           >
             <ArrowLeftRight size={14} /> Cambio de Ciclo
           </button>
+          <button onClick={() => setIsImportModalOpen(true)} className="bg-fuchsia-600/20 text-fuchsia-400 border border-fuchsia-500/30 hover:bg-fuchsia-500/30 px-3 py-1.5 rounded flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest transition-colors" title="Importar Cuadrante desde Excel">
+            <Upload size={14} /> Importar
+          </button>
           <button onClick={handleExportSheets} className="bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 px-3 py-1.5 rounded flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest transition-colors" title="Exportar a Google Sheets">
             <CloudUpload size={14} /> Sheets
           </button>
@@ -534,7 +692,12 @@ export default function Cuadrante() {
               {agentes.map((agente) => (
                 <tr key={agente.id} className="border-b border-slate-800/50 hover:bg-indigo-500/5">
                   <td className="px-3 py-2 text-slate-300 border-r border-slate-800 sticky left-0 bg-slate-950 shadow-[1px_0_0_0_#1e293b] z-10 group-hover:bg-slate-900">
-                    <div className="truncate font-bold text-indigo-400">{agente.nombre}</div>
+                    <div className="flex items-center gap-2">
+                      <div className="truncate font-bold text-indigo-400" title={agente.nombre}>{agente.nombre}</div>
+                      <span className="text-[9px] bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded border border-slate-700 font-mono flex-shrink-0" title="TIP (Número de Placa)">
+                        {agente.placa}
+                      </span>
+                    </div>
                     <div className="text-[9px] text-slate-500 font-normal uppercase tracking-widest">{agente.categoria}</div>
                   </td>
                   {daysInMonth.map(dia => {
@@ -593,6 +756,69 @@ export default function Cuadrante() {
       </div>
 
       {/* Modal Unified */}
+
+      {isImportModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-800 rounded shadow-2xl w-full max-w-2xl flex flex-col">
+            <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-950">
+              <h2 className="text-[12px] font-bold text-slate-100 uppercase tracking-widest flex items-center gap-2">
+                <Upload size={16} className="text-fuchsia-400" /> Importar Histórico de Excel
+              </h2>
+            </div>
+            <div className="p-6 flex flex-col gap-4">
+              <div className="bg-amber-500/10 border border-amber-500/20 p-4 rounded text-sm text-amber-200">
+                <strong className="block mb-2 text-amber-400 font-bold uppercase tracking-widest text-[10px]">Formato Requerido</strong>
+                Asegúrate de que el archivo tenga la fila de cabecera con el mes (ej: "SEPTIEMBRE - 2026") y otra fila con las palabras "TIP", "AGENTE" y los números del 1 al 31.
+              </div>
+              
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Archivo Excel o CSV</label>
+                <input 
+                  type="file" 
+                  accept=".xlsx, .xls, .csv"
+                  onChange={handleFileChange}
+                  className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-slate-800 file:text-indigo-400 hover:file:bg-slate-700 cursor-pointer"
+                />
+              </div>
+
+              {importando && (
+                <div className="text-center text-slate-400 font-mono text-sm py-4">Procesando archivo...</div>
+              )}
+
+              {importResult && !importando && (
+                <div className="mt-4 border border-slate-700 rounded overflow-hidden">
+                  <div className="bg-slate-800 p-3 flex justify-between items-center">
+                    <span className="text-slate-200 font-bold">Mes Detectado: {importResult.mes_anio}</span>
+                    <span className="text-emerald-400 font-bold">{importResult.turnosImportados.length} agentes leídos</span>
+                  </div>
+                  {importResult.errores.length > 0 && (
+                    <div className="bg-rose-500/10 p-3 max-h-40 overflow-y-auto">
+                      <h4 className="text-rose-400 font-bold text-xs uppercase mb-2">Advertencias:</h4>
+                      <ul className="list-disc list-inside text-rose-300 text-xs space-y-1">
+                        {importResult.errores.map((e, idx) => <li key={idx}>{e}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            
+            <div className="p-4 border-t border-slate-800 flex gap-2 justify-end bg-slate-950">
+              <button onClick={() => { setIsImportModalOpen(false); setImportResult(null); }} className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest hover:text-slate-300">
+                Cancelar
+              </button>
+              <button 
+                onClick={handleGuardarImportacion}
+                disabled={!importResult || importResult.turnosImportados.length === 0 || importando}
+                className="bg-fuchsia-600 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-fuchsia-500 text-white px-6 py-2 rounded text-[10px] font-bold uppercase tracking-widest transition-colors flex items-center gap-2"
+              >
+                {importando ? 'Guardando...' : 'Confirmar Importación'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {selectedCell && (
         <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
           <div className="bg-slate-900 border border-slate-800 rounded shadow-2xl w-full max-w-md flex flex-col">

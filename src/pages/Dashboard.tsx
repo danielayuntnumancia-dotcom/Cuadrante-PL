@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { collection, getDocs, query } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { Users, Euro, FileText, AlertCircle } from 'lucide-react';
-import { Agente, ServicioExtraordinario, AusenciaJustificada } from '../types';
+import { Agente, ServicioExtraordinario, AusenciaJustificada, getEstadoAgenteEnFecha } from '../types';
 
 export default function Dashboard() {
   const [stats, setStats] = useState({
@@ -27,17 +27,20 @@ export default function Dashboard() {
 
         const costeTotal = extras.reduce((acc, curr) => acc + (curr.coste_calculado || 0), 0);
         
+        // Contabilizar agentes en servicio activo hoy
+        const hoy = new Date();
+        const activosCount = agentes.filter(a => getEstadoAgenteEnFecha(a, hoy).estado === 'Activo').length;
+
         // Calcular AP (1 AP = 1 ausencia de tipo AP)
         let apCount = 0;
         ausencias.forEach(a => {
           if (a.tipo === 'AP') {
-            // Un AP generalmente es 1 dia, aqui podriamos calcular diferencia de fechas si son rangos
             apCount += 1; 
           }
         });
 
         setStats({
-          totalAgentes: agentes.length,
+          totalAgentes: activosCount,
           costeExtras: costeTotal,
           apConsumidos: apCount
         });
@@ -53,7 +56,7 @@ export default function Dashboard() {
   if (loading) return <div className="text-[10px] font-mono text-slate-500 uppercase tracking-widest p-4">Cargando resumen...</div>;
 
   const kpis = [
-    { title: 'Agentes Activos', value: stats.totalAgentes, icon: Users, color: 'text-indigo-400', bg: 'bg-indigo-500/20 border-indigo-500/30' },
+    { title: 'Agentes Activos (Operativos)', value: stats.totalAgentes, icon: Users, color: 'text-indigo-400', bg: 'bg-indigo-500/20 border-indigo-500/30' },
     { title: 'Coste Extras (Anual)', value: `€${stats.costeExtras.toFixed(2)}`, icon: Euro, color: 'text-emerald-400', bg: 'bg-emerald-500/20 border-emerald-500/30' },
     { title: 'Asuntos Propios (Usados)', value: stats.apConsumidos, icon: FileText, color: 'text-amber-400', bg: 'bg-amber-500/20 border-amber-500/30' },
   ];
