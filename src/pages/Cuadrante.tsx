@@ -6,7 +6,7 @@ import { parseExcelCuadrante, ImportResult } from '../lib/excelParser';
 import { format, addDays, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, parseISO, differenceInDays, isWeekend, isAfter } from 'date-fns';
 import { exportToGoogleSheets } from '../lib/google-workspace';
 import { es } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Download, FileSpreadsheet, CloudUpload, ArrowLeftRight, RotateCcw, Upload } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronDown, Download, FileSpreadsheet, CloudUpload, ArrowLeftRight, RotateCcw, Upload, Calendar } from 'lucide-react';
 import * as xlsx from 'xlsx';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
@@ -15,6 +15,11 @@ import 'jspdf-autotable';
 interface jsPDFWithAutoTable extends jsPDF {
   autoTable: (options: any) => void;
 }
+
+const MESES_LISTA = [
+  'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+  'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+];
 
 export default function Cuadrante() {
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -33,6 +38,10 @@ export default function Cuadrante() {
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importando, setImportando] = useState(false);
   const [nuevoTurnoManual, setNuevoTurnoManual] = useState('');
+
+  // State Navegación Rápida de Mes
+  const [isMonthPickerOpen, setIsMonthPickerOpen] = useState(false);
+  const [pickerYear, setPickerYear] = useState(currentDate.getFullYear());
 
   
   // Modal State
@@ -611,12 +620,119 @@ export default function Cuadrante() {
   return (
     <div className="space-y-4 flex flex-col h-full">
       <div className="flex flex-col md:flex-row justify-between items-center gap-4 shrink-0">
-        <div className="flex items-center gap-4">
-          <button onClick={prevMonth} className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-900 rounded border border-transparent hover:border-slate-800 transition-colors"><ChevronLeft size={16} /></button>
-          <h1 className="text-[12px] font-bold text-slate-100 uppercase tracking-widest min-w-[150px] text-center">
-            {format(currentDate, 'MMMM yyyy', {locale: es})}
-          </h1>
-          <button onClick={nextMonth} className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-900 rounded border border-transparent hover:border-slate-800 transition-colors"><ChevronRight size={16}/></button>
+        <div className="flex items-center gap-2">
+          <button onClick={prevMonth} className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-900 rounded border border-transparent hover:border-slate-800 transition-colors" title="Mes anterior"><ChevronLeft size={16} /></button>
+          
+          {/* Quick Month & Year Picker Dropdown */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                setPickerYear(currentDate.getFullYear());
+                setIsMonthPickerOpen(!isMonthPickerOpen);
+              }}
+              className="flex items-center justify-center gap-2 px-3 py-1.5 rounded bg-slate-900/80 hover:bg-slate-800 border border-slate-800 hover:border-indigo-500/50 text-[12px] font-bold text-slate-100 uppercase tracking-widest transition-all group min-w-[170px]"
+              title="Abrir selector rápido de mes y año"
+            >
+              <span>{format(currentDate, 'MMMM yyyy', {locale: es})}</span>
+              {changingMonth ? (
+                <span className="animate-pulse text-indigo-400 font-mono text-xs">...</span>
+              ) : (
+                <ChevronDown size={14} className={`text-slate-400 group-hover:text-indigo-400 transition-transform duration-200 ${isMonthPickerOpen ? 'rotate-180 text-indigo-400' : ''}`} />
+              )}
+            </button>
+
+            {isMonthPickerOpen && (
+              <>
+                <div 
+                  className="fixed inset-0 z-40" 
+                  onClick={() => setIsMonthPickerOpen(false)}
+                />
+                <div className="absolute top-full left-0 mt-2 w-72 bg-slate-950/95 backdrop-blur-md border border-slate-800 rounded-lg shadow-2xl p-3 z-50 animate-in fade-in zoom-in-95 duration-150">
+                  {/* Selector de Año */}
+                  <div className="flex items-center justify-between border-b border-slate-800/80 pb-2 mb-2.5">
+                    <button 
+                      type="button"
+                      onClick={() => setPickerYear(prev => prev - 1)}
+                      className="p-1 rounded text-slate-400 hover:text-indigo-400 hover:bg-slate-900 border border-slate-800/60 transition-colors"
+                      title="Año anterior"
+                    >
+                      <ChevronLeft size={14} />
+                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <Calendar size={13} className="text-indigo-400" />
+                      <span className="text-xs font-mono font-bold text-slate-200 tracking-wider">
+                        {pickerYear}
+                      </span>
+                    </div>
+                    <button 
+                      type="button"
+                      onClick={() => setPickerYear(prev => prev + 1)}
+                      className="p-1 rounded text-slate-400 hover:text-indigo-400 hover:bg-slate-900 border border-slate-800/60 transition-colors"
+                      title="Año siguiente"
+                    >
+                      <ChevronRight size={14} />
+                    </button>
+                  </div>
+
+                  {/* Cuadrícula de 12 meses */}
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {MESES_LISTA.map((nombreMes, index) => {
+                      const isCurrentSelected = currentDate.getFullYear() === pickerYear && currentDate.getMonth() === index;
+                      const isToday = new Date().getFullYear() === pickerYear && new Date().getMonth() === index;
+
+                      return (
+                        <button
+                          key={nombreMes}
+                          type="button"
+                          onClick={() => {
+                            const newDate = new Date(pickerYear, index, 1);
+                            setCurrentDate(newDate);
+                            setIsMonthPickerOpen(false);
+                          }}
+                          className={`px-2 py-2 text-[10px] font-mono font-semibold rounded transition-all flex flex-col items-center justify-center relative ${
+                            isCurrentSelected 
+                              ? 'bg-indigo-600 text-white shadow-[0_0_10px_rgba(99,102,241,0.5)] font-bold' 
+                              : 'text-slate-300 hover:bg-slate-900 hover:text-indigo-300 border border-transparent hover:border-slate-800'
+                          }`}
+                        >
+                          <span className="truncate w-full text-center">{nombreMes.slice(0, 3)}</span>
+                          {isToday && (
+                            <span className={`w-1 h-1 rounded-full mt-0.5 ${isCurrentSelected ? 'bg-white' : 'bg-indigo-400'}`} title="Mes actual" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Accesos rápidos */}
+                  <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex justify-between items-center text-[9px] font-mono">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const now = new Date();
+                        setPickerYear(now.getFullYear());
+                        setCurrentDate(new Date(now.getFullYear(), now.getMonth(), 1));
+                        setIsMonthPickerOpen(false);
+                      }}
+                      className="text-slate-400 hover:text-indigo-400 uppercase tracking-wider transition-colors"
+                    >
+                      Mes Actual
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsMonthPickerOpen(false)}
+                      className="text-slate-500 hover:text-slate-300 uppercase tracking-wider transition-colors"
+                    >
+                      Cerrar
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          <button onClick={nextMonth} className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-900 rounded border border-transparent hover:border-slate-800 transition-colors" title="Mes siguiente"><ChevronRight size={16}/></button>
         </div>
         <div className="flex gap-2 flex-wrap">
           <button 
