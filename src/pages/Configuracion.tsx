@@ -109,7 +109,7 @@ export default function Configuracion() {
   const [agentes, setAgentes] = useState<Agente[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<'general' | 'calendario' | 'vacaciones' | 'vigencias'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'calendario' | 'vacaciones' | 'vigencias' | 'jornadas'>('general');
   const [turnoActivoHorario, setTurnoActivoHorario] = useState<TipoTurno>('M');
 
   // Form states para Calendario
@@ -127,6 +127,16 @@ export default function Configuracion() {
   const [vigenciaInvertirCiclo, setVigenciaInvertirCiclo] = useState(false);
   const [vigenciaDivisionMT, setVigenciaDivisionMT] = useState(true);
   const [vigenciaRotacionInvertida, setVigenciaRotacionInvertida] = useState(false);
+
+  // Form state para Jornadas Especiales
+  const [nuevaJornadaNombre, setNuevaJornadaNombre] = useState('');
+  const [nuevaJornadaTipoAlternancia, setNuevaJornadaTipoAlternancia] = useState<'SEMANAL' | 'FIJA'>('SEMANAL');
+  const [nuevaJornadaTurnoBase, setNuevaJornadaTurnoBase] = useState<'M' | 'T' | 'N' | 'AUTO_REFUERZO'>('AUTO_REFUERZO');
+  
+  const [nuevaJornadaDiasFijos, setNuevaJornadaDiasFijos] = useState<number[]>([1,2,3,4,5]);
+  const [nuevaJornadaDiasA, setNuevaJornadaDiasA] = useState<number[]>([1,2,3,4]);
+  const [nuevaJornadaDiasB, setNuevaJornadaDiasB] = useState<number[]>([2,3,4,5]);
+
 
   useEffect(() => {
     async function load() {
@@ -555,6 +565,42 @@ export default function Configuracion() {
     }
   };
 
+  const handleAddJornadaEspecial = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!nuevaJornadaNombre) return;
+
+    const nueva: JornadaEspecial = {
+      id: Date.now().toString(),
+      nombre: nuevaJornadaNombre,
+      tipo_alternancia: nuevaJornadaTipoAlternancia,
+      turno_base: nuevaJornadaTurnoBase,
+      ...(nuevaJornadaTipoAlternancia === 'FIJA' ? { dias_fijos: nuevaJornadaDiasFijos } : { dias_semana_a: nuevaJornadaDiasA, dias_semana_b: nuevaJornadaDiasB })
+    };
+
+    setConfig({
+      ...config,
+      jornadas_especiales: [...(config.jornadas_especiales || []), nueva]
+    });
+
+    setNuevaJornadaNombre('');
+  };
+
+  const toggleDiaArray = (dia: number, array: number[], setter: React.Dispatch<React.SetStateAction<number[]>>) => {
+    if (array.includes(dia)) {
+      setter(array.filter(d => d !== dia));
+    } else {
+      setter([...array, dia]);
+    }
+  };
+
+  const handleRemoveJornadaEspecial = (id: string) => {
+    if (!window.confirm("¿Seguro que quieres eliminar esta Jornada Especial? Si hay agentes asignados a ella podrían dar error.")) return;
+    setConfig({
+      ...config,
+      jornadas_especiales: (config.jornadas_especiales || []).filter(j => j.id !== id)
+    });
+  };
+
   if (loading) return <div className="text-[10px] font-mono text-slate-500 uppercase tracking-widest p-4">Cargando configuración del sistema...</div>;
 
   const numFestivos = config.festivos_detallados?.length || 0;
@@ -605,6 +651,12 @@ export default function Configuracion() {
           className={`flex items-center gap-2 px-4 py-2.5 text-[11px] font-mono font-bold uppercase tracking-wider border-b-2 transition-colors shrink-0 ${activeTab === 'vigencias' ? 'border-indigo-500 text-indigo-400 bg-indigo-500/10' : 'border-transparent text-slate-500 hover:text-slate-300'}`}
         >
           <History size={15} /> Vigencias Temporales
+        </button>
+        <button
+          onClick={() => setActiveTab('jornadas')}
+          className={`flex items-center gap-2 px-4 py-2.5 text-[11px] font-mono font-bold uppercase tracking-wider border-b-2 transition-colors shrink-0 ${activeTab === 'jornadas' ? 'border-indigo-500 text-indigo-400 bg-indigo-500/10' : 'border-transparent text-slate-500 hover:text-slate-300'}`}
+        >
+          <ArrowLeftRight size={15} /> Jornadas Especiales
         </button>
       </div>
 
@@ -1555,6 +1607,168 @@ export default function Configuracion() {
                     </div>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CONTENIDO PESTAÑA 5: JORNADAS ESPECIALES */}
+      {activeTab === 'jornadas' && (
+        <div className="space-y-6">
+          <div className="bg-slate-900/50 p-6 rounded border border-slate-800">
+            <h2 className="text-[10px] font-bold text-slate-100 uppercase tracking-widest border-b border-slate-800 pb-2 mb-4 flex items-center gap-2">
+              <ArrowLeftRight size={14} className="text-indigo-400" /> Plantillas de Jornadas Especiales y Comodín
+            </h2>
+            <p className="text-[10px] font-mono text-slate-400 mb-6">
+              Diseña modalidades de jornada (como el Turno Comodín de 4 días) que luego podrás asignar individualmente a cualquier agente desde la sección Plantilla.
+            </p>
+
+            <form onSubmit={handleAddJornadaEspecial} className="bg-slate-950 p-4 rounded border border-slate-800 mb-6 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1">Nombre (ej. Comodín 4D)</label>
+                  <input 
+                    type="text" 
+                    required
+                    value={nuevaJornadaNombre}
+                    onChange={e => setNuevaJornadaNombre(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-[11px] font-mono text-slate-300 outline-none focus:border-indigo-500" 
+                    placeholder="Turno Especial..."
+                  />
+                </div>
+                <div>
+                  <label className="block text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1">Alternancia Semanal</label>
+                  <select 
+                    value={nuevaJornadaTipoAlternancia}
+                    onChange={e => setNuevaJornadaTipoAlternancia(e.target.value as any)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-[11px] font-mono text-slate-300 outline-none focus:border-indigo-500"
+                  >
+                    <option value="SEMANAL">Semana A / Semana B (Alterna)</option>
+                    <option value="FIJA">Jornada Fija (Mismos días siempre)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1">Turno Base (Día)</label>
+                  <select 
+                    value={nuevaJornadaTurnoBase}
+                    onChange={e => setNuevaJornadaTurnoBase(e.target.value as any)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-[11px] font-mono text-slate-300 outline-none focus:border-indigo-500"
+                  >
+                    <option value="AUTO_REFUERZO">Auto Refuerzo (Completa grupo 3)</option>
+                    <option value="M">Mañana (M)</option>
+                    <option value="T">Tarde (T)</option>
+                    <option value="N">Noche (N)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Selección de Días Dinámica */}
+              <div className="bg-slate-900/50 p-3 rounded border border-slate-800">
+                {nuevaJornadaTipoAlternancia === 'FIJA' ? (
+                  <div>
+                    <label className="block text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-2">Días de Trabajo (Fijo)</label>
+                    <div className="flex flex-wrap gap-2">
+                      {[{n: 1, l: 'L'}, {n: 2, l: 'M'}, {n: 3, l: 'X'}, {n: 4, l: 'J'}, {n: 5, l: 'V'}, {n: 6, l: 'S'}, {n: 0, l: 'D'}].map(dia => (
+                        <button
+                          key={dia.n}
+                          type="button"
+                          onClick={() => toggleDiaArray(dia.n, nuevaJornadaDiasFijos, setNuevaJornadaDiasFijos)}
+                          className={`w-8 h-8 rounded text-[11px] font-bold flex items-center justify-center transition-colors ${nuevaJornadaDiasFijos.includes(dia.n) ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+                        >
+                          {dia.l}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-[9px] font-bold text-indigo-400 uppercase tracking-widest mb-2">Días de Trabajo (Semana A)</label>
+                      <div className="flex flex-wrap gap-2">
+                        {[{n: 1, l: 'L'}, {n: 2, l: 'M'}, {n: 3, l: 'X'}, {n: 4, l: 'J'}, {n: 5, l: 'V'}, {n: 6, l: 'S'}, {n: 0, l: 'D'}].map(dia => (
+                          <button
+                            key={dia.n}
+                            type="button"
+                            onClick={() => toggleDiaArray(dia.n, nuevaJornadaDiasA, setNuevaJornadaDiasA)}
+                            className={`w-8 h-8 rounded text-[11px] font-bold flex items-center justify-center transition-colors ${nuevaJornadaDiasA.includes(dia.n) ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+                          >
+                            {dia.l}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-[9px] font-bold text-fuchsia-400 uppercase tracking-widest mb-2">Días de Trabajo (Semana B)</label>
+                      <div className="flex flex-wrap gap-2">
+                        {[{n: 1, l: 'L'}, {n: 2, l: 'M'}, {n: 3, l: 'X'}, {n: 4, l: 'J'}, {n: 5, l: 'V'}, {n: 6, l: 'S'}, {n: 0, l: 'D'}].map(dia => (
+                          <button
+                            key={dia.n}
+                            type="button"
+                            onClick={() => toggleDiaArray(dia.n, nuevaJornadaDiasB, setNuevaJornadaDiasB)}
+                            className={`w-8 h-8 rounded text-[11px] font-bold flex items-center justify-center transition-colors ${nuevaJornadaDiasB.includes(dia.n) ? 'bg-fuchsia-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+                          >
+                            {dia.l}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-end pt-2">
+                <button 
+                  type="submit" 
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[10px] uppercase py-2 px-6 rounded flex items-center gap-1.5 transition-colors"
+                >
+                  <Plus size={14} /> Crear Jornada Especial
+                </button>
+              </div>
+            </form>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left font-mono text-[10px] border-collapse">
+                <thead className="bg-slate-900 border-b border-slate-800 text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2 font-normal tracking-widest">NOMBRE</th>
+                    <th className="px-3 py-2 font-normal tracking-widest">DÍAS DE TRABAJO</th>
+                    <th className="px-3 py-2 font-normal tracking-widest">TURNO ASIGNADO</th>
+                    <th className="px-3 py-2 font-normal tracking-widest text-right">ACCIONES</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(config.jornadas_especiales || []).map((jornada) => (
+                    <tr key={jornada.id} className="border-b border-slate-800/50 hover:bg-indigo-500/5">
+                      <td className="px-3 py-3 text-indigo-400 font-bold">{jornada.nombre}</td>
+                      <td className="px-3 py-3 text-slate-300">
+                        {jornada.tipo_alternancia === 'SEMANAL' && 'Alterna (Semana A / Semana B)'}
+                        {jornada.tipo_alternancia === 'FIJA' && 'Fija (Mismos días)'}
+                      </td>
+                      <td className="px-3 py-3">
+                        {jornada.turno_base === 'AUTO_REFUERZO' && <span className="text-amber-400 font-bold border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 rounded">Comodín Auto-Refuerzo</span>}
+                        {jornada.turno_base === 'M' && <span className="text-sky-400 font-bold border border-sky-400/30 bg-sky-400/10 px-1.5 py-0.5 rounded">Mañana Fija</span>}
+                        {jornada.turno_base === 'T' && <span className="text-orange-400 font-bold border border-orange-400/30 bg-orange-400/10 px-1.5 py-0.5 rounded">Tarde Fija</span>}
+                      </td>
+                      <td className="px-3 py-3 text-right">
+                        <button 
+                          onClick={() => handleRemoveJornadaEspecial(jornada.id)}
+                          className="text-slate-500 hover:text-rose-400 p-1 transition-colors"
+                          title="Eliminar"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {(!config.jornadas_especiales || config.jornadas_especiales.length === 0) && (
+                    <tr>
+                      <td colSpan={4} className="px-3 py-4 text-center text-slate-500 text-[10px]">
+                        No hay jornadas especiales configuradas.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>

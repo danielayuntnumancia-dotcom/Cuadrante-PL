@@ -10,8 +10,17 @@ export default function Plantilla() {
   const [agentes, setAgentes] = useState<Agente[]>([]);
   const [grupos, setGrupos] = useState<Grupo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [config, setConfig] = useState<any>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Modal de Asignación de Jornadas Especiales
+  const [isAsignacionModalOpen, setIsAsignacionModalOpen] = useState(false);
+  const [agenteAsignacionSelected, setAgenteAsignacionSelected] = useState<Agente | null>(null);
+  const [nuevaAsignacionTipo, setNuevaAsignacionTipo] = useState<'7x7' | 'ESPECIAL'>('ESPECIAL');
+  const [nuevaAsignacionJornadaId, setNuevaAsignacionJornadaId] = useState('');
+  const [nuevaAsignacionDesde, setNuevaAsignacionDesde] = useState('');
+  const [nuevaAsignacionHasta, setNuevaAsignacionHasta] = useState('');
 
   // Modal específico de Historial de Estados / Bajas / Comisiones
   const [isEstadoModalOpen, setIsEstadoModalOpen] = useState(false);
@@ -30,14 +39,18 @@ export default function Plantilla() {
   const [estado, setEstado] = useState<EstadoAgente>('Activo');
   const [fechaEstadoDesde, setFechaEstadoDesde] = useState('');
   const [fechaEstadoHasta, setFechaEstadoHasta] = useState('');
+  const [fechaIncorporacion, setFechaIncorporacion] = useState('');
 
   const loadData = async () => {
     setLoading(true);
     try {
-      const [agentesSnap, gruposSnap] = await Promise.all([
+      const [agentesSnap, gruposSnap, configSnap] = await Promise.all([
         getDocs(collection(db, 'agentes')),
-        getDocs(collection(db, 'grupos'))
+        getDocs(collection(db, 'grupos')),
+        import('firebase/firestore').then(({ getDoc, doc }) => getDoc(doc(db, 'configuracion', 'anual')))
       ]);
+      
+      if (configSnap.exists()) setConfig(configSnap.data());
       
       let currentGrupos = gruposSnap.docs.map(d => ({ ...d.data(), id: d.id } as Grupo));
       let currentAgentes = agentesSnap.docs.map(d => ({ ...d.data(), id: d.id } as Agente));
@@ -82,6 +95,7 @@ export default function Plantilla() {
     setEstado('Activo');
     setFechaEstadoDesde('');
     setFechaEstadoHasta('');
+    setFechaIncorporacion('');
     setEditingId(null);
   };
 
@@ -97,7 +111,8 @@ export default function Plantilla() {
       asuntos_propios_total: apTotal,
       estado,
       fecha_estado_desde: estado !== 'Activo' ? fechaEstadoDesde : '',
-      fecha_estado_hasta: estado !== 'Activo' ? fechaEstadoHasta : ''
+      fecha_estado_hasta: estado !== 'Activo' ? fechaEstadoHasta : '',
+      fecha_incorporacion: fechaIncorporacion || undefined
     };
 
     if (editingId) {
@@ -193,6 +208,54 @@ export default function Plantilla() {
     loadData();
   };
 
+  const handleOpenAsignacionModal = (agente: Agente) => {
+    setAgenteAsignacionSelected(agente);
+    setNuevaAsignacionTipo('ESPECIAL');
+    const defaultJornada = config?.jornadas_especiales?.[0]?.id || '';
+    setNuevaAsignacionJornadaId(defaultJornada);
+    setNuevaAsignacionDesde(format(new Date(), 'yyyy-MM-dd'));
+    setNuevaAsignacionHasta('');
+    setIsAsignacionModalOpen(true);
+  };
+
+  const handleAddAsignacion = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!agenteAsignacionSelected?.id || !nuevaAsignacionDesde) return;
+    if (nuevaAsignacionTipo === 'ESPECIAL' && !nuevaAsignacionJornadaId) {
+      alert("Seleccione una jornada especial");
+      return;
+    }
+
+    const nueva = {
+      id: `${Date.now()}`,
+      tipo_jornada: nuevaAsignacionTipo,
+      fecha_desde: nuevaAsignacionDesde,
+      ...(nuevaAsignacionHasta ? { fecha_hasta: nuevaAsignacionHasta } : {}),
+      ...(nuevaAsignacionTipo === 'ESPECIAL' ? { id_jornada_especial: nuevaAsignacionJornadaId } : { id_grupo: agenteAsignacionSelected.id_grupo })
+    };
+
+    const asigsActuales = agenteAsignacionSelected.asignaciones_jornada || [];
+    const actualizados = [...asigsActuales, nueva].sort((a, b) => b.fecha_desde.localeCompare(a.fecha_desde));
+    const cleanData = JSON.parse(JSON.stringify({ asignaciones_jornada: actualizados }));
+
+    await updateDoc(doc(db, 'agentes', agenteAsignacionSelected.id), cleanData);
+    setAgenteAsignacionSelected(prev => prev ? { ...prev, asignaciones_jornada: actualizados } : null);
+    setNuevaAsignacionDesde(format(new Date(), 'yyyy-MM-dd'));
+    setNuevaAsignacionHasta('');
+    loadData();
+  };
+
+  const handleDeleteAsignacion = async (asignacionId: string) => {
+    if (!agenteAsignacionSelected?.id) return;
+    const asigsActuales = agenteAsignacionSelected.asignaciones_jornada || [];
+    const actualizados = asigsActuales.filter(p => p.id !== asignacionId);
+    const cleanData = JSON.parse(JSON.stringify({ asignaciones_jornada: actualizados }));
+
+    await updateDoc(doc(db, 'agentes', agenteAsignacionSelected.id), cleanData);
+    setAgenteAsignacionSelected(prev => prev ? { ...prev, asignaciones_jornada: actualizados } : null);
+    loadData();
+  };
+
   const renderBadgeEstado = (agente: Agente) => {
     const { estado: estHoy, periodoActivo } = getEstadoAgenteEnFecha(agente, new Date());
     const totalPeriodos = (agente.periodos_estado || []).length;
@@ -273,7 +336,13 @@ export default function Plantilla() {
               </tr>
             </thead>
             <tbody>
-              {agentes.map(agente => (
+              {[...agentes]
+                .sort((a, b) => {
+                  const grupoA = grupos.find(g => g.id === a.id_grupo)?.nombre || '';
+                  const grupoB = grupos.find(g => g.id === b.id_grupo)?.nombre || '';
+                  return grupoA.localeCompare(grupoB) || a.placa.localeCompare(b.placa);
+                })
+                .map(agente => (
                 <tr key={agente.id} className="border-b border-slate-800/50 hover:bg-indigo-500/5 text-slate-300">
                   <td className="px-3 py-2 text-indigo-400 font-bold">#{agente.placa}</td>
                   <td className="px-3 py-2 font-bold text-slate-200">{agente.nombre}</td>
@@ -299,6 +368,14 @@ export default function Plantilla() {
                     >
                       <HeartPulse size={14} />
                     </button>
+                    <button 
+                      type="button"
+                      onClick={() => handleOpenAsignacionModal(agente)} 
+                      className="text-amber-400 hover:text-amber-300 p-1 mr-1 transition-colors" 
+                      title="Asignar Jornada Especial / Comodín"
+                    >
+                      <Calendar size={14} />
+                    </button>
                     <button onClick={() => {
                       setNombre(agente.nombre);
                       setPlaca(agente.placa);
@@ -308,6 +385,7 @@ export default function Plantilla() {
                       setEstado(agente.estado || 'Activo');
                       setFechaEstadoDesde(agente.fecha_estado_desde || '');
                       setFechaEstadoHasta(agente.fecha_estado_hasta || '');
+                      setFechaIncorporacion(agente.fecha_incorporacion || '');
                       setEditingId(agente.id!);
                       setIsModalOpen(true);
                     }} className="text-slate-500 hover:text-indigo-400 p-1 mr-1 transition-colors" title="Editar ficha agente"><Edit2 size={14} /></button>
@@ -322,6 +400,137 @@ export default function Plantilla() {
           </table>
         </div>
       </div>
+
+      {/* Modal Específico de Asignación de Jornadas */}
+      {isAsignacionModalOpen && agenteAsignacionSelected && (() => {
+        const asignaciones = agenteAsignacionSelected.asignaciones_jornada || [];
+
+        return (
+          <div className="fixed inset-0 bg-slate-950/80 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+            <div className="bg-slate-900 border border-slate-800 rounded shadow-2xl w-full max-w-2xl p-5 flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
+              <div className="border-b border-slate-800 pb-3 flex justify-between items-start flex-wrap gap-2">
+                <div>
+                  <h2 className="text-[12px] font-bold text-slate-100 uppercase tracking-widest flex items-center gap-2">
+                    <Calendar size={16} className="text-indigo-400" />
+                    Asignación de Jornadas
+                  </h2>
+                  <p className="text-[11px] font-mono text-indigo-400 font-bold mt-0.5">
+                    #{agenteAsignacionSelected.placa} - {agenteAsignacionSelected.nombre}
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-slate-950 p-4 rounded border border-slate-800 space-y-4">
+                <form onSubmit={handleAddAsignacion} className="flex flex-wrap items-end gap-3">
+                  <div>
+                    <label className="block text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1">Tipo de Jornada</label>
+                    <select 
+                      value={nuevaAsignacionTipo}
+                      onChange={(e) => setNuevaAsignacionTipo(e.target.value as '7x7' | 'ESPECIAL')}
+                      className="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-[11px] font-mono text-slate-300 outline-none focus:border-indigo-500 min-w-[150px]"
+                    >
+                      <option value="7x7">Normal (7x7 / Grupo)</option>
+                      <option value="ESPECIAL">Especial / Comodín</option>
+                    </select>
+                  </div>
+
+                  {nuevaAsignacionTipo === 'ESPECIAL' && (
+                    <div>
+                      <label className="block text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1">Jornada Especial</label>
+                      <select 
+                        value={nuevaAsignacionJornadaId}
+                        onChange={(e) => setNuevaAsignacionJornadaId(e.target.value)}
+                        className="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-[11px] font-mono text-slate-300 outline-none focus:border-indigo-500 min-w-[150px]"
+                      >
+                        {config?.jornadas_especiales?.map((j: any) => (
+                          <option key={j.id} value={j.id}>{j.nombre}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1">Desde</label>
+                    <input 
+                      type="date" 
+                      required
+                      value={nuevaAsignacionDesde} 
+                      onChange={e => setNuevaAsignacionDesde(e.target.value)} 
+                      className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[11px] font-mono text-slate-300 outline-none focus:border-indigo-500 [color-scheme:dark]" 
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1">Hasta (Opcional)</label>
+                    <input 
+                      type="date" 
+                      value={nuevaAsignacionHasta} 
+                      onChange={e => setNuevaAsignacionHasta(e.target.value)} 
+                      className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[11px] font-mono text-slate-300 outline-none focus:border-indigo-500 [color-scheme:dark]" 
+                    />
+                  </div>
+                  <button 
+                    type="submit" 
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[10px] uppercase py-1.5 px-3 rounded flex items-center gap-1.5 transition-colors h-[31px]"
+                  >
+                    <Plus size={14} /> Añadir
+                  </button>
+                </form>
+
+                <div className="overflow-x-auto mt-4 border border-slate-800 rounded">
+                  <table className="w-full text-left font-mono text-[10px] border-collapse">
+                    <thead className="bg-slate-900 border-b border-slate-800 text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2 font-normal tracking-widest">DESDE</th>
+                        <th className="px-3 py-2 font-normal tracking-widest">HASTA</th>
+                        <th className="px-3 py-2 font-normal tracking-widest">TIPO</th>
+                        <th className="px-3 py-2 font-normal tracking-widest text-right">ELIMINAR</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {asignaciones.map((a, i) => {
+                        const jInfo = a.tipo_jornada === 'ESPECIAL' ? config?.jornadas_especiales?.find((x:any) => x.id === a.id_jornada_especial)?.nombre : 'Normal (7x7)';
+                        return (
+                          <tr key={a.id} className="border-b border-slate-800/50 hover:bg-slate-800/50">
+                            <td className="px-3 py-2 font-bold text-indigo-400">{formatFechaVisual(a.fecha_desde)}</td>
+                            <td className="px-3 py-2 text-slate-400">{a.fecha_hasta ? formatFechaVisual(a.fecha_hasta) : 'Indefinida'}</td>
+                            <td className="px-3 py-2 text-slate-300">{jInfo || 'Desconocida'}</td>
+                            <td className="px-3 py-2 text-right">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteAsignacion(a.id!)}
+                                className="text-slate-500 hover:text-rose-400 p-1 transition-colors"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {asignaciones.length === 0 && (
+                        <tr>
+                          <td colSpan={4} className="px-3 py-4 text-center text-slate-500 text-[10px]">
+                            No hay asignaciones. (Hará el turno del Grupo por defecto).
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => { setIsAsignacionModalOpen(false); setAgenteAsignacionSelected(null); }}
+                  className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] font-bold uppercase tracking-widest rounded transition-colors"
+                >
+                  Cerrar
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Modal Específico de Historial de Estados / Bajas / Comisiones */}
       {isEstadoModalOpen && agenteEstadoSelected && (() => {
@@ -625,6 +834,23 @@ export default function Plantilla() {
                       <option key={g.id} value={g.id}>{g.nombre.toUpperCase()}</option>
                     ))}
                   </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Días AP Totales</label>
+                  <input type="number" min="0" max="15" value={apTotal} onChange={e => setApTotal(parseInt(e.target.value) || 6)} className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-[11px] font-mono text-slate-300 outline-none focus:border-indigo-500" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Fecha de Incorporación / Alta (Opcional)</label>
+                  <input 
+                    type="date" 
+                    value={fechaIncorporacion} 
+                    onChange={e => setFechaIncorporacion(e.target.value)} 
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-[11px] font-mono text-slate-300 outline-none focus:border-indigo-500 [color-scheme:dark]" 
+                  />
+                  <p className="text-[8px] font-mono text-slate-500 mt-1">Si se especifica, el agente no aparecerá en el cuadrante antes de esta fecha.</p>
                 </div>
               </div>
 

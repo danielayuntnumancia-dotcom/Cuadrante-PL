@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { collection, getDocs, addDoc, doc, getDoc, updateDoc, query, where, writeBatch } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { Agente, Grupo, ConfiguracionAnual, ServicioExtraordinario, AusenciaJustificada, TipoAusencia, VigenciaCuadrante, TurnoImportado } from '../types';
+import { Agente, Grupo, ConfiguracionAnual, ServicioExtraordinario, AusenciaJustificada, TipoAusencia, VigenciaCuadrante, TurnoImportado, getEstadoAgenteEnFecha } from '../types';
 import { parseExcelCuadrante, ImportResult } from '../lib/excelParser';
-import { format, addDays, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, parseISO, differenceInDays, isWeekend, isAfter } from 'date-fns';
+import { format, addDays, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, parseISO, differenceInDays, isWeekend, isAfter, getISOWeek } from 'date-fns';
 import { exportToGoogleSheets } from '../lib/google-workspace';
 import { es } from 'date-fns/locale';
 import { ChevronLeft, ChevronRight, ChevronDown, Download, FileSpreadsheet, CloudUpload, ArrowLeftRight, RotateCcw, Upload, Calendar } from 'lucide-react';
@@ -46,7 +46,7 @@ export default function Cuadrante() {
   
   // Modal State
   const [selectedCell, setSelectedCell] = useState<{agente: Agente, fecha: Date} | null>(null);
-  const [activeTab, setActiveTab] = useState<'extra' | 'ausencia'>('extra');
+  const [activeTab, setActiveTab] = useState<'extra' | 'ausencia' | 'cambio'>('extra');
   
   // Extra Form
   const [horaInicio, setHoraInicio] = useState('');
@@ -56,6 +56,11 @@ export default function Cuadrante() {
   // Ausencia Form
   const [fechaFinAusencia, setFechaFinAusencia] = useState('');
   const [tipoAusencia, setTipoAusencia] = useState<TipoAusencia>('IT');
+
+  // Cambio Manual Form
+  const [modTurno, setModTurno] = useState<'M' | 'T' | 'N' | 'L'>('M');
+  const [modMotivo, setModMotivo] = useState<'voluntario_companeros' | 'necesidades_servicio' | 'ayuntamiento' | 'otro'>('voluntario_companeros');
+  const [modObs, setModObs] = useState('');
 
   // Modal Cambio de Ciclo
   const [isCambioCicloModalOpen, setIsCambioCicloModalOpen] = useState(false);
@@ -145,9 +150,58 @@ export default function Cuadrante() {
     return validas[validas.length - 1];
   };
 
+  const getAsignacionJornada = (agente: Agente, fecha: Date) => {
+    if (!agente.asignaciones_jornada) return null;
+    const fechaStr = format(fecha, 'yyyy-MM-dd');
+    return agente.asignaciones_jornada.find(a => {
+      const startOk = fechaStr >= a.fecha_desde;
+      const endOk = !a.fecha_hasta || fechaStr <= a.fecha_hasta;
+      return startOk && endOk;
+    });
+  };
+
+  const getModificacionTurno = (agente: Agente, fecha: Date) => {
+    if (!agente.modificaciones_turno) return null;
+    const fechaStr = format(fecha, 'yyyy-MM-dd');
+    return agente.modificaciones_turno.find(m => m.fecha === fechaStr);
+  };
+
   // Lógica de si el agente trabaja en una fecha dada
   const esDiaTrabajo = (agente: Agente, fecha: Date) => {
-    const grupo = grupos.find(g => g.id === agente.id_grupo);
+    const mod = getModificacionTurno(agente, fecha);
+    if (mod) return mod.turno !== 'L';
+
+    const fechaStr = format(fecha, 'yyyy-MM-dd');
+    if (agente.fecha_incorporacion && fechaStr < agente.fecha_incorporacion) {
+      return false;
+    }
+
+    const asignacion = getAsignacionJornada(agente, fecha);
+    
+    // Si la asignación es una Jornada Especial
+    if (asignacion && asignacion.tipo_jornada === 'ESPECIAL' && asignacion.id_jornada_especial) {
+      const jornada = config?.jornadas_especiales?.find(j => j.id === asignacion.id_jornada_especial);
+      if (jornada) {
+        const refDate = parseISO(asignacion.fecha_desde);
+        const refWeek = getISOWeek(refDate);
+        const currentWeek = getISOWeek(fecha);
+        const isSemanaA = (currentWeek % 2) === (refWeek % 2);
+        const dow = fecha.getDay(); // 0: Dom, 1: Lun...
+
+        if (jornada.tipo_alternancia === 'FIJA') {
+          return jornada.dias_fijos?.includes(dow) ?? false;
+        } else {
+          if (isSemanaA) {
+            return jornada.dias_semana_a?.includes(dow) ?? false;
+          } else {
+            return jornada.dias_semana_b?.includes(dow) ?? false;
+          }
+        }
+      }
+    }
+
+    const grupoId = asignacion?.id_grupo || agente.id_grupo;
+    const grupo = grupos.find(g => g.id === grupoId);
     if (!grupo) return false;
     
     const vigencia = getVigenciaActiva(grupo, fecha);
@@ -177,40 +231,128 @@ export default function Cuadrante() {
   };
 
   // Cálculo del turno Mañana / Tarde (M / T) con regla de >= 4 agentes y rotación
-  const getTurnoAgente = (agente: Agente, fecha: Date): 'M' | 'T' => {
-    const grupo = grupos.find(g => g.id === agente.id_grupo);
+  const getTurnoAgente = (agente: Agente, fecha: Date): 'M' | 'T' | 'N' | '' => {
+    const mod = getModificacionTurno(agente, fecha);
+    if (mod && mod.turno !== 'L') return mod.turno;
+
+    const asignacion = getAsignacionJornada(agente, fecha);
+    
+    if (asignacion && asignacion.tipo_jornada === 'ESPECIAL' && asignacion.id_jornada_especial) {
+      const jornada = config?.jornadas_especiales?.find(j => j.id === asignacion.id_jornada_especial);
+      if (jornada && jornada.turno_base !== 'AUTO_REFUERZO') {
+        return jornada.turno_base;
+      }
+    }
+
+    const grupoId = asignacion?.id_grupo || agente.id_grupo;
+    const grupo = grupos.find(g => g.id === grupoId);
     if (!grupo) return 'M';
 
-    const agentesGrupo = agentes.filter(a => a.id_grupo === agente.id_grupo);
+    const agentesGrupo = agentes.filter(a => {
+        if (a.fecha_incorporacion && format(fecha, 'yyyy-MM-dd') < a.fecha_incorporacion) return false;
+        
+        // Excluir agentes inactivos (CS, Excedencia) para no falsear el número real de agentes del grupo
+        const { estado } = getEstadoAgenteEnFecha(a, fecha);
+        if (estado === 'Comisión de Servicio' || estado === 'Excedencia') return false;
+
+        const asig = getAsignacionJornada(a, fecha);
+        const gId = asig?.id_grupo || a.id_grupo;
+        return gId === grupoId;
+    });
+
+    // Buscar TODOS los comodines activos en el sistema (independientemente de su grupo base)
+    // para que un comodín pueda actuar sobre cualquier grupo de 3 agentes que esté trabajando.
+    const todosAgentesComodin = agentes.filter(a => {
+        if (a.fecha_incorporacion && format(fecha, 'yyyy-MM-dd') < a.fecha_incorporacion) return false;
+        const { estado } = getEstadoAgenteEnFecha(a, fecha);
+        if (estado === 'Comisión de Servicio' || estado === 'Excedencia') return false;
+        
+        const asig = getAsignacionJornada(a, fecha);
+        if (asig && asig.tipo_jornada === 'ESPECIAL') {
+          const j = config?.jornadas_especiales?.find(x => x.id === asig.id_jornada_especial);
+          return j?.turno_base === 'AUTO_REFUERZO';
+        }
+        return false;
+    });
+
+    const agentesNormales = agentesGrupo.filter(a => !todosAgentesComodin.some(c => c.id === a.id));
     const minAgentes = config?.reglas_turnos?.min_agentes_division_mt ?? 4;
     const turnoDefecto = config?.reglas_turnos?.turno_defecto_sin_division ?? 'M';
 
     const vigencia = getVigenciaActiva(grupo, fecha);
-    const divisionActiva = vigencia?.division_mt !== undefined ? vigencia.division_mt : (agentesGrupo.length >= minAgentes);
+    const divisionActiva = vigencia?.division_mt !== undefined ? vigencia.division_mt : true;
+
+    // Regla de 3 normales + 1 comodín
+    const isComodin = todosAgentesComodin.some(a => a.id === agente.id);
+    if (agentesNormales.length === 3 && todosAgentesComodin.length === 1) {
+      const comodinTrabajaHoy = todosAgentesComodin.some(a => esDiaTrabajo(a, fecha));
+      if (isComodin) return 'M';
+
+      const normalesOrdenados = [...agentesNormales].sort((a, b) => a.placa.localeCompare(b.placa) || a.nombre.localeCompare(b.nombre));
+      const agenteIndex = normalesOrdenados.findIndex(a => a.id === agente.id);
+      
+      const fechaPatronStr = vigencia?.patron_inicio || grupo.patron_inicio;
+      const diffDays = differenceInDays(fecha, parseISO(fechaPatronStr));
+      const numCiclo = Math.floor(diffDays / 14);
+      
+      const idxMañana = ((numCiclo % 3) + 3) % 3;
+      
+      if (agenteIndex === idxMañana) {
+         if (!comodinTrabajaHoy && isWeekend(fecha)) return 'T';
+         return 'M';
+      } else {
+         return 'T';
+      }
+    }
 
     if (!divisionActiva || agentesGrupo.length < minAgentes) {
+      const turnosDia = config?.reglas_turnos?.turnos_dias_sin_division;
+      if (turnosDia) {
+        const mapaDias: Record<number, 'lunes' | 'martes' | 'miercoles' | 'jueves' | 'viernes' | 'sabado' | 'domingo'> = {
+          1: 'lunes', 2: 'martes', 3: 'miercoles', 4: 'jueves', 5: 'viernes', 6: 'sabado', 0: 'domingo'
+        };
+        const diaClave = mapaDias[fecha.getDay()];
+        if (diaClave && turnosDia[diaClave]) {
+          return turnosDia[diaClave];
+        }
+      }
       return turnoDefecto;
     }
 
-    // Ordenar agentes del grupo de forma estable
-    const agentesOrdenados = [...agentesGrupo].sort((a, b) => a.placa.localeCompare(b.placa) || a.nombre.localeCompare(b.nombre));
+    // Regla estándar >= 4 agentes
+    let agentesOrdenados = [...agentesGrupo].sort((a, b) => a.placa.localeCompare(b.placa) || a.nombre.localeCompare(b.nombre));
+    
+    const fechaPatronStr = vigencia?.patron_inicio || grupo.patron_inicio;
+    const diffDays = differenceInDays(fecha, parseISO(fechaPatronStr));
+    const numCiclo = Math.floor(diffDays / 14);
+
+    // Rotar internamente para que no trabajen siempre las mismas parejas
+    // Utilizamos un algoritmo tipo "Round-Robin" fijando el primer elemento y rotando el resto
+    // Esto garantiza que todos los agentes se emparejen con todos a lo largo de los ciclos.
+    if (agentesOrdenados.length > 1) {
+      const N = agentesOrdenados.length;
+      const rotaciones = numCiclo % (N - 1);
+      
+      const primero = agentesOrdenados[0];
+      const resto = agentesOrdenados.slice(1);
+      
+      const restoRotado = [
+        ...resto.slice(rotaciones),
+        ...resto.slice(0, rotaciones)
+      ];
+      
+      agentesOrdenados = [primero, ...restoRotado];
+    }
+
     const agenteIndex = agentesOrdenados.findIndex(a => a.id === agente.id);
     const mitad = Math.ceil(agentesOrdenados.length / 2);
     const esPrimeraMitad = agenteIndex < mitad;
-
-    // Calcular ciclo transcurrido
-    const fechaPatronStr = vigencia?.patron_inicio || grupo.patron_inicio;
-    const fechaPatron = parseISO(fechaPatronStr);
-    const diffDays = differenceInDays(fecha, fechaPatron);
-    const numCiclo = Math.floor(diffDays / 14);
 
     const cicloPar = (numCiclo % 2 + 2) % 2 === 0;
     const rotacionInvertida = (vigencia?.rotacion_mt_invertida ?? grupo.rotacion_mt_invertida) ?? false;
 
     let turnoPrimeraMitad: 'M' | 'T' = cicloPar ? 'M' : 'T';
-    if (rotacionInvertida) {
-      turnoPrimeraMitad = turnoPrimeraMitad === 'M' ? 'T' : 'M';
-    }
+    if (rotacionInvertida) turnoPrimeraMitad = turnoPrimeraMitad === 'M' ? 'T' : 'M';
 
     return esPrimeraMitad ? turnoPrimeraMitad : (turnoPrimeraMitad === 'M' ? 'T' : 'M');
   };
@@ -341,17 +483,53 @@ export default function Cuadrante() {
     e.preventDefault();
     if (!selectedCell || !fechaFinAusencia) return;
 
-    await addDoc(collection(db, 'ausencias_justificadas'), {
-      id_agente: selectedCell.agente.id,
-      fecha_inicio: format(selectedCell.fecha, 'yyyy-MM-dd'),
-      fecha_fin: fechaFinAusencia,
-      tipo: tipoAusencia,
-      computa_horas: true
-    });
+    try {
+      await addDoc(collection(db, 'ausencias_justificadas'), {
+        id_agente: selectedCell.agente.id,
+        fecha_inicio: format(selectedCell.fecha, 'yyyy-MM-dd'),
+        fecha_fin: fechaFinAusencia,
+        tipo: tipoAusencia,
+        computa_horas: true
+      });
+      setSelectedCell(null);
+      await loadData();
+    } catch (error) {
+      console.error("Error guardando ausencia", error);
+      alert("Error guardando ausencia");
+    }
+  };
 
-    setSelectedCell(null);
-    setFechaFinAusencia('');
-    loadEventosMes(currentDate);
+  const handleGuardarCambio = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCell) return;
+
+    try {
+      const agenteId = selectedCell.agente.id;
+      const fechaStr = format(selectedCell.fecha, 'yyyy-MM-dd');
+      
+      const nuevoCambio = {
+        id: `${Date.now()}`,
+        id_agente: agenteId,
+        fecha: fechaStr,
+        turno: modTurno,
+        motivo_tipo: modMotivo,
+        observaciones: modObs
+      };
+
+      const modsActuales = selectedCell.agente.modificaciones_turno || [];
+      // Remove any existing mod for this date
+      const filt = modsActuales.filter(m => m.fecha !== fechaStr);
+      const actualizados = [...filt, nuevoCambio];
+
+      const cleanData = JSON.parse(JSON.stringify({ modificaciones_turno: actualizados }));
+      await updateDoc(doc(db, 'agentes', agenteId!), cleanData);
+      
+      setSelectedCell(null);
+      await loadData();
+    } catch (error) {
+      console.error("Error guardando cambio de turno", error);
+      alert("Error guardando cambio");
+    }
   };
 
   // Botón Rápido ROTAR M/T
@@ -769,7 +947,8 @@ export default function Cuadrante() {
           <table className="w-full text-left font-mono text-[10px] border-collapse min-w-[800px]">
             <thead className="bg-slate-900 sticky top-0 z-20">
               <tr className="border-b border-slate-800 text-slate-500">
-                <th className="px-3 py-2 font-normal tracking-widest uppercase border-r border-slate-800 sticky left-0 bg-slate-900 z-30 w-48 shadow-[1px_0_0_0_#1e293b]">Agente</th>
+                <th className="px-3 py-2 font-normal tracking-widest uppercase border-r border-slate-800 sticky left-0 bg-slate-900 z-30 w-20 shadow-[1px_0_0_0_#1e293b]">TIP</th>
+                <th className="px-3 py-2 font-normal tracking-widest uppercase border-r border-slate-800 sticky left-20 bg-slate-900 z-30 w-48 shadow-[1px_0_0_0_#1e293b]">Agente</th>
                 {daysInMonth.map(dia => {
                   const fStr = format(dia, 'yyyy-MM-dd');
                   const festivoDetalle = config?.festivos_detallados?.find(f => f.fecha === fStr);
@@ -805,37 +984,54 @@ export default function Cuadrante() {
               </tr>
             </thead>
             <tbody>
-              {agentes.map((agente) => (
+              {[...agentes]
+                .sort((a, b) => {
+                  const grupoA = grupos.find(g => g.id === a.id_grupo)?.nombre || '';
+                  const grupoB = grupos.find(g => g.id === b.id_grupo)?.nombre || '';
+                  return grupoA.localeCompare(grupoB) || a.placa.localeCompare(b.placa);
+                })
+                .map((agente) => (
                 <tr key={agente.id} className="border-b border-slate-800/50 hover:bg-indigo-500/5">
-                  <td className="px-3 py-2 text-slate-300 border-r border-slate-800 sticky left-0 bg-slate-950 shadow-[1px_0_0_0_#1e293b] z-10 group-hover:bg-slate-900">
-                    <div className="flex items-center gap-2">
-                      <div className="truncate font-bold text-indigo-400" title={agente.nombre}>{agente.nombre}</div>
-                      <span className="text-[9px] bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded border border-slate-700 font-mono flex-shrink-0" title="TIP (Número de Placa)">
-                        {agente.placa}
-                      </span>
-                    </div>
+                  <td className="px-3 py-2 text-indigo-400 font-bold border-r border-slate-800 sticky left-0 bg-slate-950 shadow-[1px_0_0_0_#1e293b] z-10 group-hover:bg-slate-900 text-center align-middle whitespace-nowrap">
+                    #{agente.placa}
+                  </td>
+                  <td className="px-3 py-2 text-slate-300 border-r border-slate-800 sticky left-20 bg-slate-950 shadow-[1px_0_0_0_#1e293b] z-10 group-hover:bg-slate-900 whitespace-nowrap overflow-hidden">
+                    <div className="truncate font-bold text-slate-200" title={agente.nombre}>{agente.nombre}</div>
                     <div className="text-[9px] text-slate-500 font-normal uppercase tracking-widest">{agente.categoria}</div>
                   </td>
                   {daysInMonth.map(dia => {
                     const trabaja = esDiaTrabajo(agente, dia);
                     const ausencia = getAusenciaEnDia(agente, dia);
                     const extrasDelDia = getExtrasEnDia(agente.id!, dia);
+                    const mod = getModificacionTurno(agente, dia);
                     
-                    let turnoCalculado: 'M' | 'T' | '' = '';
+                    let turnoCalculado: 'M' | 'T' | 'N' | 'L' | '' = '';
                     let bgColor = 'bg-transparent';
                     let textColor = 'text-slate-700';
                     let content = '';
 
                     if (trabaja) {
-                      turnoCalculado = getTurnoAgente(agente, dia);
+                      turnoCalculado = getTurnoAgente(agente, dia) as any;
                       content = turnoCalculado;
                       if (turnoCalculado === 'M') {
                         bgColor = 'bg-sky-500/15';
                         textColor = 'text-sky-400 font-bold';
-                      } else {
+                      } else if (turnoCalculado === 'T') {
                         bgColor = 'bg-amber-500/15';
                         textColor = 'text-amber-400 font-bold';
+                      } else if (turnoCalculado === 'N') {
+                        bgColor = 'bg-indigo-500/15';
+                        textColor = 'text-indigo-400 font-bold';
                       }
+                      
+                      if (mod) {
+                        bgColor = 'bg-fuchsia-500/20 border border-fuchsia-500/50';
+                        textColor = 'text-fuchsia-300 font-bold';
+                      }
+                    } else if (mod && mod.turno === 'L') {
+                      bgColor = 'bg-fuchsia-500/20 border border-fuchsia-500/50';
+                      textColor = 'text-fuchsia-300 font-bold';
+                      content = 'L';
                     }
 
                     if (ausencia) {
@@ -958,10 +1154,50 @@ export default function Cuadrante() {
               >
                 Ausencia
               </button>
+              <button 
+                onClick={() => setActiveTab('cambio')}
+                className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-widest border-b-2 transition-colors ${activeTab === 'cambio' ? 'border-fuchsia-500 text-fuchsia-400' : 'border-transparent text-slate-500 hover:text-slate-300 bg-slate-900/50'}`}
+              >
+                Cambio Turno
+              </button>
             </div>
 
             <div className="p-5 overflow-y-auto">
-              {activeTab === 'extra' ? (
+              {activeTab === 'cambio' ? (
+                <form onSubmit={handleGuardarCambio} className="space-y-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Turno Manual Asignado</label>
+                    <select required value={modTurno} onChange={e => setModTurno(e.target.value as any)} className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-[11px] font-mono text-slate-300 outline-none focus:border-fuchsia-500">
+                      <option value="M">MAÑANA (M)</option>
+                      <option value="T">TARDE (T)</option>
+                      <option value="N">NOCHE (N)</option>
+                      <option value="L">LIBRE (L)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Motivo del Cambio</label>
+                    <select required value={modMotivo} onChange={e => setModMotivo(e.target.value as any)} className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-[11px] font-mono text-slate-300 outline-none focus:border-fuchsia-500">
+                      <option value="voluntario_companeros">Voluntario entre compañeros</option>
+                      <option value="necesidades_servicio">Necesidades del servicio</option>
+                      <option value="ayuntamiento">Por parte del Ayuntamiento</option>
+                      <option value="otro">Otro motivo</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Observaciones</label>
+                    <input type="text" value={modObs} onChange={e => setModObs(e.target.value)} placeholder="Opcional..." className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-1.5 text-[11px] font-mono text-slate-300 outline-none focus:border-fuchsia-500" />
+                  </div>
+                  
+                  <div className="bg-fuchsia-500/10 p-2.5 rounded border border-fuchsia-500/20 text-[10px] font-mono text-fuchsia-300">
+                    Este cambio se resaltará visualmente en el cuadrante y prevalecerá sobre el turno calculado automáticamente.
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2 border-t border-slate-800 mt-2">
+                    <button type="button" onClick={() => setSelectedCell(null)} className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-slate-200 transition-colors">Cancelar</button>
+                    <button type="submit" className="px-3 py-1.5 bg-fuchsia-600 hover:bg-fuchsia-500 text-white text-[10px] font-bold uppercase tracking-widest rounded transition-colors">Guardar Cambio</button>
+                  </div>
+                </form>
+              ) : activeTab === 'extra' ? (
                 <form onSubmit={handleGuardarExtra} className="space-y-4">
                   <div className="grid grid-cols-2 gap-4">
                     <div>

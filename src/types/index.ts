@@ -11,6 +11,17 @@ export interface PeriodoEstado {
   creado_el?: string;
 }
 
+export type TipoJornadaAgente = '7x7' | 'COMODIN_4D' | 'ESPECIAL';
+
+export interface AsignacionJornadaAgente {
+  id?: string;
+  tipo_jornada: TipoJornadaAgente;
+  fecha_desde: string; // YYYY-MM-DD
+  fecha_hasta?: string; // YYYY-MM-DD
+  id_grupo?: string; // Para 7x7
+  id_jornada_especial?: string; // Si es una jornada especial personalizada
+}
+
 export interface Agente {
   id?: string;
   nombre: string;
@@ -22,6 +33,9 @@ export interface Agente {
   fecha_estado_desde?: string; // YYYY-MM-DD legado
   fecha_estado_hasta?: string; // YYYY-MM-DD legado
   periodos_estado?: PeriodoEstado[]; // Historial dinámico de situaciones
+  fecha_incorporacion?: string; // YYYY-MM-DD para altas futuras
+  asignaciones_jornada?: AsignacionJornadaAgente[]; // Historial de jornadas
+  modificaciones_turno?: ModificacionTurno[]; // Historial de cambios manuales voluntarios o necesidades del servicio
 }
 
 /**
@@ -123,6 +137,16 @@ export interface HorarioTramo {
 
 export type HorariosSemana = Record<DiaSemana, HorarioTramo>;
 
+export interface JornadaEspecial {
+  id: string;
+  nombre: string;
+  tipo_alternancia: 'SEMANAL' | 'FIJA';
+  dias_fijos?: number[]; // 0: Dom, 1: Lun, 2: Mar, ... 6: Sab
+  dias_semana_a?: number[];
+  dias_semana_b?: number[];
+  turno_base: 'M' | 'T' | 'N' | 'AUTO_REFUERZO';
+}
+
 export interface ConfiguracionAnual {
   año: string;
   horarios_base: {
@@ -139,6 +163,7 @@ export interface ConfiguracionAnual {
   dias_sin_servicio_detallados?: DiaSinServicio[];
   dias_sin_servicio: string[]; // YYYY-MM-DD para retrocompatibilidad
   plan_vacaciones?: PlanVacacionesGrupo[];
+  jornadas_especiales?: JornadaEspecial[];
   reglas_turnos: {
     min_agentes_division_mt: number; // Por defecto 4
     turno_defecto_sin_division: 'M' | 'T'; // Por defecto 'M' (retrocompatibilidad)
@@ -191,4 +216,13 @@ export interface TurnoImportado {
   id_agente: string;
   mes_anio: string; // Formato YYYY-MM (ej. 2026-09)
   turnos: Record<string, string>; // Mapa de día (DD) a turno (ej. "01": "M", "02": "L", "15": "F")
+}
+
+export interface ModificacionTurno {
+  id?: string;
+  id_agente: string;
+  fecha: string; // YYYY-MM-DD
+  turno: 'M' | 'T' | 'N' | 'L'; // Turno asignado manualmente (o L de Libre si descansan)
+  motivo_tipo: 'voluntario_companeros' | 'necesidades_servicio' | 'ayuntamiento' | 'otro';
+  observaciones?: string;
 }
