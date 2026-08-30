@@ -4,7 +4,7 @@ declare global {
 
 import config from '../../firebase-applet-config.json';
 
-const CLIENT_ID = config.oAuthClientId;
+const CLIENT_ID = (config as any).oAuthClientId || '';
 const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/calendar';
 
 let accessToken = '';

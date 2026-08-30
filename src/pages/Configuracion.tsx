@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { doc, getDoc, setDoc, getDocs, collection, updateDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { ConfiguracionAnual, FestivoAnual, DiaSinServicio, PlanVacacionesGrupo, DistribucionCoberturaVacaciones, Grupo, VigenciaCuadrante, DiaSemana, TipoTurno, HorariosSemana, Agente } from '../types';
+import { ConfiguracionAnual, FestivoAnual, DiaSinServicio, PlanVacacionesGrupo, DistribucionCoberturaVacaciones, Grupo, VigenciaCuadrante, DiaSemana, TipoTurno, HorariosSemana, Agente, JornadaEspecial } from '../types';
 import { Save, Calendar, Clock, SunMedium, Users, Plus, Trash2, ShieldAlert, CheckCircle2, History, ArrowLeftRight, Copy, Check } from 'lucide-react';
 import { format, parseISO, eachDayOfInterval, differenceInCalendarDays } from 'date-fns';
 

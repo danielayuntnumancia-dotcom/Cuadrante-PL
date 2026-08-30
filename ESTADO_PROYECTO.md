@@ -1,11 +1,43 @@
 # Estado del Proyecto - Cuadrante PL
 
-## Logros de esta sesión
-- **Motor de Importación de Turnos Manuales**: Se ha implementado y estabilizado el flujo completo para importar el cuadrante desde un Excel.
-- **Plantilla de Exportación a Excel Segura**: El botón "Excel" ahora exporta el mes actual con el formato *exacto* requerido (TIP, AGENTE y los números del mes) para ser re-importado posteriormente. Las celdas vienen pre-rellenadas con el cálculo automático para ahorrar tiempo.
-- **Visualización de TIP**: Se ha añadido un pequeño 'badge' con el número de TIP del agente directamente en la columna izquierda del cuadrante.
-- **Optimización de Rendimiento**: Se ha reestructurado el ciclo de vida de `Cuadrante.tsx`. Al pasar de un mes a otro, ya no se descargan otra vez los agentes ni la configuración (que causaban pantallas de carga pesadas y parpadeos). Ahora la transición entre meses es instantánea y utiliza un indicador suave de carga (`...`).
-- **Navegación Rápida entre Meses**: Selector desplegable integrado en la cabecera del cuadrante al pulsar sobre el mes actual, permitiendo cambiar de año rápidamente y saltar directamente a cualquiera de los 12 meses o volver al mes actual con un solo clic.
+**Fecha de actualización:** 30 de agosto de 2026  
+**Proyecto Firebase:** `cuadrantepl`  
+**URL de producción:** [https://cuadrantepl.web.app](https://cuadrantepl.web.app)  
 
-## Tareas pendientes para la próxima sesión
-- Ninguna pendiente por el momento.
+---
+
+## 🏆 Logros de esta Sesión
+
+1. **Sincronización Completa del Entorno:**
+   - Descarga e integración de los últimos cambios de GitHub (`git pull`) y actualización de dependencias (`npm install`).
+
+2. **Motor de Cómputo Anual de Días y Horas:**
+   - Creación de `src/lib/calculoHoras.ts` con lógica centralizada para clasificar automáticamente entre periodos pasados (**efectivamente realizados**) y futuros (**previstos**) según la fecha actual.
+   - Cálculo preciso de horas ordinarias por turno (`M`, `T`, `N`) según la configuración anual, contabilización de horas extraordinarias y desglose de ausencias justificadas (`AP`, `V`, `IT`, `J`).
+
+3. **Nueva Vista e Interfaz: Cómputo Anual (`/computo-anual`):**
+   - Creación de `src/pages/ComputoAnual.tsx` e integración en el menú de navegación (`src/App.tsx`).
+   - Selector dinámico de año (histórico de años anteriores, año actual y proyección de años futuros).
+   - Configuración interactiva de la jornada anual de convenio de referencia (por defecto 1.540h) con balance horario en tiempo real.
+   - Tarjetas KPI globales de la plantilla y tabla interactiva con filtros por Grupo, buscador y barras de progreso.
+   - Modal de ficha individual por agente con desglose mes a mes (12 meses) de días, horas y distribución de turnos.
+
+4. **Exportaciones de Informes Anuales:**
+   - Exportación de la tabla de cómputo anual a **Excel (`.xlsx`)** y **PDF** corporativo apaisado.
+
+5. **Compilación y Despliegue en Producción:**
+   - Verificación de tipos TypeScript (`npx tsc --noEmit`) sin errores y despliegue exitoso en Firebase Hosting.
+
+---
+
+## 📌 Tareas Pendientes para la Próxima Sesión
+
+1. **Personalización de Jornada Anual por Agente / Categoría:**
+   - Permitir asignar jornadas de referencia específicas por agente si existen reducciones de jornada o acuerdos particulares.
+2. **Gráficos Estadísticos Avanzados:**
+   - Incorporar gráficos de barras/líneas para la visualización de la carga de trabajo y turnos por mes en la vista de Cómputo Anual.
+3. **Gestión de Roles y Permisos:**
+   - Limitar la edición de configuraciones y cuadrantes a administradores, manteniendo el modo consulta para agentes.
+
+---
+*Entorno sincronizado y guardado de forma segura.*

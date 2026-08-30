@@ -2,13 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
 import { onAuthStateChanged, signInWithPopup, signOut, User } from 'firebase/auth';
 import { auth, googleProvider } from './lib/firebase';
-import { LogOut, Calendar, Users, Settings, LayoutDashboard } from 'lucide-react';
+import { LogOut, Calendar, Users, Settings, LayoutDashboard, TrendingUp } from 'lucide-react';
 import { cn } from './lib/utils';
 
 // Pages
 import Dashboard from './pages/Dashboard';
 import Cuadrante from './pages/Cuadrante';
 import Plantilla from './pages/Plantilla';
+import ComputoAnual from './pages/ComputoAnual';
 import Configuracion from './pages/Configuracion';
 
 function ProtectedRoute({ children, user }: { children: React.ReactNode, user: User | null }) {
@@ -64,6 +65,7 @@ function Layout({ children, user }: { children: React.ReactNode, user: User }) {
   const navItems = [
     { name: 'Resumen', path: '/', icon: LayoutDashboard },
     { name: 'Cuadrante', path: '/cuadrante', icon: Calendar },
+    { name: 'Cómputo Anual', path: '/computo-anual', icon: TrendingUp },
     { name: 'Plantilla', path: '/plantilla', icon: Users },
     { name: 'Configuración', path: '/configuracion', icon: Settings },
   ];
@@ -72,6 +74,7 @@ function Layout({ children, user }: { children: React.ReactNode, user: User }) {
   const titleMap: Record<string, string> = {
     '': 'RESUMEN PRINCIPAL',
     'cuadrante': 'CUADRANTE',
+    'computo-anual': 'CÓMPUTO ANUAL DE HORAS Y JORNADAS',
     'plantilla': 'PLANTILLA DE AGENTES',
     'configuracion': 'CONFIGURACIÓN'
   };
@@ -163,6 +166,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<ProtectedRoute user={user}><Dashboard /></ProtectedRoute>} />
         <Route path="/cuadrante" element={<ProtectedRoute user={user}><Cuadrante /></ProtectedRoute>} />
+        <Route path="/computo-anual" element={<ProtectedRoute user={user}><ComputoAnual /></ProtectedRoute>} />
         <Route path="/plantilla" element={<ProtectedRoute user={user}><Plantilla /></ProtectedRoute>} />
         <Route path="/configuracion" element={<ProtectedRoute user={user}><Configuracion /></ProtectedRoute>} />
       </Routes>
