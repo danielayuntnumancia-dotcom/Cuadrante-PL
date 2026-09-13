@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { collection, getDocs, addDoc, doc, getDoc, updateDoc, query, where, writeBatch } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { Agente, Grupo, ConfiguracionAnual, ServicioExtraordinario, AusenciaJustificada, TipoAusencia, VigenciaCuadrante, TurnoImportado, getEstadoAgenteEnFecha } from '../types';
+import { Agente, Grupo, ConfiguracionAnual, ServicioExtraordinario, AusenciaJustificada, TipoAusencia, VigenciaCuadrante, TurnoImportado, getEstadoAgenteEnFecha, DiaSinServicio } from '../types';
 import { parseExcelCuadrante, ImportResult } from '../lib/excelParser';
 import { format, addDays, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, parseISO, differenceInDays, isWeekend, isAfter, getISOWeek } from 'date-fns';
 import { exportToGoogleSheets } from '../lib/google-workspace';
@@ -402,8 +402,21 @@ export default function Cuadrante() {
     return docImportado.turnos[diaStr] || null;
   };
   
-  const getDiaSinServicioDetalle = (fecha: Date): any | null => {
-    return null; // Mock para la exportacion si falta
+  const getDiaSinServicioDetalle = (fecha: Date): DiaSinServicio | null => {
+    if (!config) return null;
+    const fStr = format(fecha, 'yyyy-MM-dd');
+    // Buscar en los detallados con soporte de rangos (fecha_fin inclusive)
+    const detallado = config.dias_sin_servicio_detallados?.find(d => {
+      if (fStr < d.fecha) return false;
+      const hasta = d.fecha_fin || d.fecha;
+      return fStr <= hasta;
+    });
+    if (detallado) return detallado;
+    // Fallback al array de strings expandido (retrocompatibilidad)
+    if ((config.dias_sin_servicio || []).includes(fStr)) {
+      return { fecha: fStr, motivo: 'Sin Servicio Ordinario' };
+    }
+    return null;
   };
 
   // Cálculo Económico
@@ -603,11 +616,13 @@ export default function Cuadrante() {
         }
 
         const aus = getAusenciaEnDia(agente, dia);
+        // Bug fix: getDiaSinServicioDetalle ahora funciona con rangos y string array
         const sinServ = getDiaSinServicioDetalle(dia);
         if (aus) {
           row.push(aus.tipo);
         } else if (sinServ) {
-          row.push('');
+          // Si trabaja ese día → CS (Cobertura Sin Servicio); si descansa → L
+          row.push(esDiaTrabajo(agente, dia) ? 'CS' : 'L');
         } else if (esDiaTrabajo(agente, dia)) {
           row.push(getTurnoAgente(agente, dia));
         } else {
@@ -952,8 +967,14 @@ export default function Cuadrante() {
                 {daysInMonth.map(dia => {
                   const fStr = format(dia, 'yyyy-MM-dd');
                   const festivoDetalle = config?.festivos_detallados?.find(f => f.fecha === fStr);
-                  const diaSinServDetalle = config?.dias_sin_servicio_detallados?.find(d => d.fecha === fStr);
+                  // Bug #3 fix: buscar con soporte de rangos (fecha_fin)
+                  const diaSinServDetalle = config?.dias_sin_servicio_detallados?.find(d => {
+                    if (fStr < d.fecha) return false;
+                    const hasta = d.fecha_fin || d.fecha;
+                    return fStr <= hasta;
+                  });
                   const isFest = !!festivoDetalle || (config?.festivos || []).includes(fStr);
+                  // Bug #5 fix: isSinServ cubre también el array de strings expandido
                   const isSinServ = !!diaSinServDetalle || (config?.dias_sin_servicio || []).includes(fStr);
                   const isWk = isWeekend(dia);
 
@@ -964,8 +985,13 @@ export default function Cuadrante() {
                     thClass = 'bg-rose-500/20 text-rose-400 font-bold';
                     titleTooltip = `Festivo: ${festivoDetalle.nombre}`;
                   } else if (diaSinServDetalle) {
+                    // Bug #3/#5 fix: ahora diaSinServDetalle cubre rangos, y el motivo viene del objeto
                     thClass = 'bg-amber-500/20 text-amber-400 font-bold';
                     titleTooltip = `Sin Servicio: ${diaSinServDetalle.motivo}`;
+                  } else if (isSinServ) {
+                    // Fallback para fechas en el array de strings (retrocompatibilidad)
+                    thClass = 'bg-amber-500/20 text-amber-400 font-bold';
+                    titleTooltip = 'Sin Servicio Ordinario';
                   } else if (isFest || isWk) {
                     thClass = 'bg-rose-500/10 text-rose-400';
                   }
@@ -1004,6 +1030,10 @@ export default function Cuadrante() {
                     const ausencia = getAusenciaEnDia(agente, dia);
                     const extrasDelDia = getExtrasEnDia(agente.id!, dia);
                     const mod = getModificacionTurno(agente, dia);
+                    // Bug #1/#2 fix: getDiaSinServicioDetalle ahora funciona realmente
+                    const sinServicio = getDiaSinServicioDetalle(dia);
+                    // Prioridad máxima: situación administrativa del agente (CS/EX/IT desde Plantilla)
+                    const { estado: estadoAdmin } = getEstadoAgenteEnFecha(agente, dia);
                     
                     let turnoCalculado: 'M' | 'T' | 'N' | 'L' | '' = '';
                     let bgColor = 'bg-transparent';
@@ -1011,22 +1041,30 @@ export default function Cuadrante() {
                     let content = '';
 
                     if (trabaja) {
-                      turnoCalculado = getTurnoAgente(agente, dia) as any;
-                      content = turnoCalculado;
-                      if (turnoCalculado === 'M') {
-                        bgColor = 'bg-sky-500/15';
-                        textColor = 'text-sky-400 font-bold';
-                      } else if (turnoCalculado === 'T') {
-                        bgColor = 'bg-amber-500/15';
-                        textColor = 'text-amber-400 font-bold';
-                      } else if (turnoCalculado === 'N') {
-                        bgColor = 'bg-indigo-500/15';
-                        textColor = 'text-indigo-400 font-bold';
-                      }
-                      
-                      if (mod) {
-                        bgColor = 'bg-fuchsia-500/20 border border-fuchsia-500/50';
-                        textColor = 'text-fuchsia-300 font-bold';
+                      // Jerarquía: mod manual > sin servicio > turno calculado
+                      if (sinServicio && !ausencia && !mod) {
+                        // El agente estaría en turno pero el servicio ordinario está suspendido
+                        bgColor = 'bg-amber-700/25';
+                        textColor = 'text-amber-600 font-bold';
+                        content = 'CS';
+                      } else {
+                        turnoCalculado = getTurnoAgente(agente, dia) as any;
+                        content = turnoCalculado;
+                        if (turnoCalculado === 'M') {
+                          bgColor = 'bg-sky-500/15';
+                          textColor = 'text-sky-400 font-bold';
+                        } else if (turnoCalculado === 'T') {
+                          bgColor = 'bg-amber-500/15';
+                          textColor = 'text-amber-400 font-bold';
+                        } else if (turnoCalculado === 'N') {
+                          bgColor = 'bg-indigo-500/15';
+                          textColor = 'text-indigo-400 font-bold';
+                        }
+                        
+                        if (mod) {
+                          bgColor = 'bg-fuchsia-500/20 border border-fuchsia-500/50';
+                          textColor = 'text-fuchsia-300 font-bold';
+                        }
                       }
                     } else if (mod && mod.turno === 'L') {
                       bgColor = 'bg-fuchsia-500/20 border border-fuchsia-500/50';
@@ -1034,6 +1072,7 @@ export default function Cuadrante() {
                       content = 'L';
                     }
 
+                    // Ausencias puntuales (AP, V, J) tienen prioridad sobre el turno calculado
                     if (ausencia) {
                       if (ausencia.tipo === 'V') {
                         bgColor = 'bg-amber-500/25';
@@ -1043,6 +1082,23 @@ export default function Cuadrante() {
                         textColor = 'text-rose-400 font-bold';
                       }
                       content = ausencia.tipo;
+                    }
+
+                    // PRIORIDAD MÁXIMA: situación administrativa registrada en Plantilla
+                    // Comisión de Servicio (CS), Excedencia (EX) y Baja Médica (IT) desde periodos_estado
+                    // sobreescriben cualquier turno, ausencia puntual o dia sin servicio.
+                    if (estadoAdmin === 'Comisión de Servicio') {
+                      bgColor = 'bg-violet-500/20';
+                      textColor = 'text-violet-400 font-bold';
+                      content = 'CS';
+                    } else if (estadoAdmin === 'Excedencia') {
+                      bgColor = 'bg-slate-700/40';
+                      textColor = 'text-slate-400 font-bold';
+                      content = 'EX';
+                    } else if (estadoAdmin === 'Baja Médica') {
+                      bgColor = 'bg-rose-700/25';
+                      textColor = 'text-rose-400 font-bold';
+                      content = 'IT';
                     }
 
                     const hasExtra = extrasDelDia.length > 0;
