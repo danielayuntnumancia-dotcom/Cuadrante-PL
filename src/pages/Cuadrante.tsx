@@ -248,9 +248,11 @@ export default function Cuadrante() {
     const grupo = grupos.find(g => g.id === grupoId);
     if (!grupo) return 'M';
 
-    // Bug 3 fix: Cobertura de vacaciones cruzada entre grupos
+    // Cobertura de vacaciones cruzada entre grupos
     // Si este mes es el mes de vacaciones de OTRO grupo y division_semanal_vacaciones está activa,
-    // el agente cubre al otro grupo y debe usar el turno configurado en su plan de cobertura.
+    // determinar el turno por semana del mes (sin depender de cómo estén configuradas las parejas).
+    // Semanas impares (1 y 3: días 1-7, 15-21) → turno_semana_natural
+    // Semanas pares  (2 y 4: días 8-14, 22+)  → turno_semana_cobertura
     const divisionVac = config?.reglas_turnos?.division_semanal_vacaciones ?? true;
     if (divisionVac && config?.plan_vacaciones) {
       const mesNum = fecha.getMonth() + 1;
@@ -258,17 +260,14 @@ export default function Cuadrante() {
         p => p.id_grupo !== grupoId && p.meses?.includes(mesNum)
       );
       if (otroGrupoEnVacaciones) {
-        // Este agente está cubriendo → buscar su configuración de cobertura
         const miPlan = config.plan_vacaciones.find(p => p.id_grupo === grupoId);
         const cob = miPlan?.cobertura;
+        const semanaEnMes = Math.ceil(fecha.getDate() / 7); // 1, 2, 3 o 4
+        const esSemanaImpar = semanaEnMes % 2 === 1;         // semanas 1 y 3 son impares
         if (cob) {
-          const enNatural = cob.agentes_semana_natural?.includes(agente.id ?? '') ?? false;
-          const enCobertura = cob.agentes_semana_cobertura?.includes(agente.id ?? '') ?? false;
-          // Solo aplicar si el agente está en UNA sola pareja (configuración no ambigua)
-          if (enNatural && !enCobertura) return cob.turno_semana_natural ?? 'M';
-          if (enCobertura && !enNatural) return cob.turno_semana_cobertura ?? 'T';
-          // Si hay configuración de grupo reducido (< 4 agentes)
-          if (!enNatural && !enCobertura && cob.turno_grupo_reducido) return cob.turno_grupo_reducido;
+          return esSemanaImpar
+            ? (cob.turno_semana_natural ?? 'M')
+            : (cob.turno_semana_cobertura ?? 'T');
         }
       }
     }

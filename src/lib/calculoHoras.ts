@@ -267,7 +267,9 @@ export function getTurnoAgenteFecha(
   const grupo = grupos.find(g => g.id === grupoId);
   if (!grupo) return 'M';
 
-  // Bug 3b fix: Cobertura de vacaciones cruzada
+  // Cobertura de vacaciones cruzada entre grupos
+  // Semanas impares del mes (1 y 3: días 1-7, 15-21) → turno_semana_natural
+  // Semanas pares  del mes (2 y 4: días 8-14, 22+)  → turno_semana_cobertura
   const divisionVac = config?.reglas_turnos?.division_semanal_vacaciones ?? true;
   if (divisionVac && config?.plan_vacaciones) {
     const mesNum = fecha.getMonth() + 1;
@@ -277,12 +279,12 @@ export function getTurnoAgenteFecha(
     if (otroGrupoEnVacaciones) {
       const miPlan = config.plan_vacaciones.find(p => p.id_grupo === grupoId);
       const cob = miPlan?.cobertura;
+      const semanaEnMes = Math.ceil(fecha.getDate() / 7);
+      const esSemanaImpar = semanaEnMes % 2 === 1;
       if (cob) {
-        const enNatural = cob.agentes_semana_natural?.includes(agente.id ?? '') ?? false;
-        const enCobertura = cob.agentes_semana_cobertura?.includes(agente.id ?? '') ?? false;
-        if (enNatural && !enCobertura) return cob.turno_semana_natural ?? 'M';
-        if (enCobertura && !enNatural) return cob.turno_semana_cobertura ?? 'T';
-        if (!enNatural && !enCobertura && cob.turno_grupo_reducido) return cob.turno_grupo_reducido;
+        return esSemanaImpar
+          ? (cob.turno_semana_natural ?? 'M')
+          : (cob.turno_semana_cobertura ?? 'T');
       }
     }
   }
