@@ -267,6 +267,26 @@ export function getTurnoAgenteFecha(
   const grupo = grupos.find(g => g.id === grupoId);
   if (!grupo) return 'M';
 
+  // Bug 3b fix: Cobertura de vacaciones cruzada
+  const divisionVac = config?.reglas_turnos?.division_semanal_vacaciones ?? true;
+  if (divisionVac && config?.plan_vacaciones) {
+    const mesNum = fecha.getMonth() + 1;
+    const otroGrupoEnVacaciones = config.plan_vacaciones.find(
+      p => p.id_grupo !== grupoId && p.meses?.includes(mesNum)
+    );
+    if (otroGrupoEnVacaciones) {
+      const miPlan = config.plan_vacaciones.find(p => p.id_grupo === grupoId);
+      const cob = miPlan?.cobertura;
+      if (cob) {
+        const enNatural = cob.agentes_semana_natural?.includes(agente.id ?? '') ?? false;
+        const enCobertura = cob.agentes_semana_cobertura?.includes(agente.id ?? '') ?? false;
+        if (enNatural && !enCobertura) return cob.turno_semana_natural ?? 'M';
+        if (enCobertura && !enNatural) return cob.turno_semana_cobertura ?? 'T';
+        if (!enNatural && !enCobertura && cob.turno_grupo_reducido) return cob.turno_grupo_reducido;
+      }
+    }
+  }
+
   const agentesGrupo = agentes.filter(a => {
     if (a.fecha_incorporacion && format(fecha, 'yyyy-MM-dd') < a.fecha_incorporacion) return false;
     const { estado } = getEstadoAgenteEnFecha(a, fecha);
@@ -380,9 +400,15 @@ export function getAusenciaAgenteFecha(
 
   // 2. Vacaciones automáticas por plan anual de grupo
   if (config?.plan_vacaciones) {
-    const plan = config.plan_vacaciones.find(p => p.id_grupo === agente.id_grupo);
+    // Bug 1b fix: usar el grupo efectivo de esa fecha (respeta reasignaciones de jornada)
+    const asig = getAsignacionJornada(agente, fecha);
+    const grupoEfectivoId = asig?.id_grupo ?? agente.id_grupo;
+    const plan = config.plan_vacaciones.find(p => p.id_grupo === grupoEfectivoId);
     const mesNum = fecha.getMonth() + 1;
     if (plan && plan.meses && plan.meses.includes(mesNum)) {
+      // Bug 2b fix: solo marcar como V si el agente trabaja ese día
+      // (los días de descanso no son ausencia, son libres)
+      // Nota: no tenemos acceso a grupos/turnosImportados aquí, se usa el ciclo base 7x7
       return { tipo: 'V', computa_horas: true };
     }
   }

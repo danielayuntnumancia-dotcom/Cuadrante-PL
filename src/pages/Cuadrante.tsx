@@ -248,6 +248,31 @@ export default function Cuadrante() {
     const grupo = grupos.find(g => g.id === grupoId);
     if (!grupo) return 'M';
 
+    // Bug 3 fix: Cobertura de vacaciones cruzada entre grupos
+    // Si este mes es el mes de vacaciones de OTRO grupo y division_semanal_vacaciones está activa,
+    // el agente cubre al otro grupo y debe usar el turno configurado en su plan de cobertura.
+    const divisionVac = config?.reglas_turnos?.division_semanal_vacaciones ?? true;
+    if (divisionVac && config?.plan_vacaciones) {
+      const mesNum = fecha.getMonth() + 1;
+      const otroGrupoEnVacaciones = config.plan_vacaciones.find(
+        p => p.id_grupo !== grupoId && p.meses?.includes(mesNum)
+      );
+      if (otroGrupoEnVacaciones) {
+        // Este agente está cubriendo → buscar su configuración de cobertura
+        const miPlan = config.plan_vacaciones.find(p => p.id_grupo === grupoId);
+        const cob = miPlan?.cobertura;
+        if (cob) {
+          const enNatural = cob.agentes_semana_natural?.includes(agente.id ?? '') ?? false;
+          const enCobertura = cob.agentes_semana_cobertura?.includes(agente.id ?? '') ?? false;
+          // Solo aplicar si el agente está en UNA sola pareja (configuración no ambigua)
+          if (enNatural && !enCobertura) return cob.turno_semana_natural ?? 'M';
+          if (enCobertura && !enNatural) return cob.turno_semana_cobertura ?? 'T';
+          // Si hay configuración de grupo reducido (< 4 agentes)
+          if (!enNatural && !enCobertura && cob.turno_grupo_reducido) return cob.turno_grupo_reducido;
+        }
+      }
+    }
+
     const agentesGrupo = agentes.filter(a => {
         if (a.fecha_incorporacion && format(fecha, 'yyyy-MM-dd') < a.fecha_incorporacion) return false;
         
@@ -367,11 +392,16 @@ export default function Cuadrante() {
     });
     if (ausencia) return ausencia;
 
-    // 2. Comprobar si el mes corresponde a las vacaciones asignadas al grupo en la configuración
+    // 2. Vacaciones del grupo según plan de configuración
     if (config?.plan_vacaciones) {
-      const plan = config.plan_vacaciones.find(p => p.id_grupo === agente.id_grupo);
+      // Bug 1 fix: usar el grupo efectivo para esa fecha (respeta reasignaciones de jornada)
+      const asignacion = getAsignacionJornada(agente, fecha);
+      const grupoEfectivoId = asignacion?.id_grupo ?? agente.id_grupo;
+      const plan = config.plan_vacaciones.find(p => p.id_grupo === grupoEfectivoId);
       const mesNum = fecha.getMonth() + 1;
       if (plan && plan.meses && plan.meses.includes(mesNum)) {
+        // Bug 2 fix: solo marcar como V en días de trabajo, no en descansos
+        if (!esDiaTrabajo(agente, fecha)) return null;
         return {
           id_agente: agente.id!,
           fecha_inicio: format(fecha, 'yyyy-MM-dd'),
