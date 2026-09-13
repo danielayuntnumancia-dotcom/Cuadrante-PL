@@ -8,35 +8,41 @@
 
 ## 🏆 Logros de esta Sesión
 
-1. **Corrección crítica: Días Sin Servicio Ordinario (Cuadrante.tsx):**
-   - La función `getDiaSinServicioDetalle` era un mock que siempre devolvía `null`. Se ha reemplazado con la implementación real que busca en `dias_sin_servicio_detallados` con soporte de rangos de fechas (`fecha_fin`), y cae en `dias_sin_servicio[]` como fallback de retrocompatibilidad.
-   - Las columnas de días especiales en el header ahora se colorean correctamente en ámbar.
-   - Las celdas de agentes en días sin servicio muestran `CS` (Cobertura Sin Servicio) con fondo ámbar oscuro.
+1. **Corrección de Cobertura de Vacaciones en Meses Especiales (`division_semanal_vacaciones`):**
+   - Se rediseñó la lógica de asignación de turnos durante la cobertura cruzada de vacaciones entre grupos (`getTurnoAgente` en `Cuadrante.tsx` y `getTurnoAgenteFecha` en `calculoHoras.ts`).
+   - La asignación del turno ya no depende de la configuración explícita de parejas en la interfaz (que podía ser ambigua si los agentes estaban asignados a ambas listas), sino de la **semana del mes**:
+     - Semanas 1 y 3 (días 1–7 y 15–21): Turno natural (`turno_semana_natural`).
+     - Semanas 2 y 4 (días 8–14 y 22+): Turno de cobertura (`turno_semana_cobertura`).
+   - Garantiza total coherencia entre el Cuadrante visual y el Cómputo Anual de Horas ante cualquier configuración de parejas.
 
-2. **Corrección crítica: Jerarquía de estado administrativo en el Cuadrante:**
-   - Se ha unificado la fuente de verdad para situaciones administrativas. El cuadrante ahora consulta `getEstadoAgenteEnFecha(agente, fecha)` (que lee `periodos_estado` registrado desde la sección Plantilla) y lo aplica como **prioridad máxima** sobre cualquier turno, ausencia puntual o día sin servicio.
-   - **Comisión de Servicio (CS):** fondo violeta `bg-violet-500/20`.
-   - **Excedencia (EX):** fondo gris oscuro `bg-slate-700/40`.
-   - **Baja Médica (IT):** fondo rojo oscuro `bg-rose-700/25`.
-   - Esto garantiza que todos los apartados de la app se respeten entre sí: lo configurado en Plantilla se refleja automáticamente en el Cuadrante y en el Cómputo Anual.
+2. **Corrección crítica: Días Sin Servicio Ordinario (Cuadrante.tsx):**
+   - Reemplazado el stub de `getDiaSinServicioDetalle` por la implementación real con soporte de rangos (`fecha_fin`) y retrocompatibilidad con `dias_sin_servicio[]`.
+   - Visualización clara en el header (ámbar) y celdas de agentes (`CS` - Cobertura Sin Servicio con fondo ámbar oscuro).
 
-3. **Motor de Cómputo Anual de Días y Horas** (sesión anterior):
-   - `src/lib/calculoHoras.ts` con lógica centralizada de periodos pasados y futuros.
-   - Vista `/computo-anual` con KPIs globales, tabla con filtros y modal de ficha individual.
-   - Exportaciones a Excel y PDF corporativo.
+3. **Jerarquía y coherencia de estado administrativo entre módulos:**
+   - Unificada la fuente de verdad mediante `periodos_estado` (definido en Plantilla):
+     - **Comisión de Servicio (CS):** fondo violeta `bg-violet-500/20`.
+     - **Excedencia (EX):** fondo gris oscuro `bg-slate-700/40`.
+     - **Baja Médica (IT):** fondo rojo oscuro `bg-rose-700/25`.
+   - Se respeta la jerarquía máxima sobre turnos ordinarios o ausencias puntuales tanto en el Cuadrante como en el Cómputo Anual.
+
+4. **Despliegue y Verificación en Producción:**
+   - Compilado sin errores de TypeScript.
+   - Desplegado en Firebase Hosting ([https://cuadrantepl.web.app](https://cuadrantepl.web.app)).
+   - Repositorio Git sincronizado en la rama `main`.
 
 ---
 
 ## 📌 Tareas Pendientes para la Próxima Sesión
 
 1. **Limpieza de registros huérfanos en `ausencias_justificadas`:**
-   - Si existen registros con `tipo: 'EX'` o `tipo: 'CS'` en la colección de ausencias que ahora son redundantes (porque la situación administrativa se gestiona desde `periodos_estado`), considerar una migración o borrado de esos registros para evitar duplicidades.
+   - Revisar si existen registros antiguos con `tipo: 'EX'` o `tipo: 'CS'` redundantes con respecto a `periodos_estado` para depurarlos.
 2. **Personalización de Jornada Anual por Agente / Categoría:**
    - Permitir asignar jornadas de referencia específicas por agente para reducciones de jornada o acuerdos particulares.
 3. **Gráficos Estadísticos Avanzados:**
-   - Gráficos de barras/líneas para la carga de trabajo y turnos por mes en la vista de Cómputo Anual.
+   - Añadir visualizaciones gráficas de la distribución de turnos y cómputo mensual en la vista de Cómputo Anual.
 4. **Gestión de Roles y Permisos:**
-   - Limitar la edición de configuraciones y cuadrantes a administradores.
+   - Restringir la edición de configuraciones y cuadrantes según el rol de usuario.
 
 ---
 *Entorno sincronizado y guardado de forma segura.*
